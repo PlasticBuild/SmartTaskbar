@@ -6,8 +6,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../SmartTaskbar/Models/AutoHideTransition.cs" Link="AutoHideTransition.cs" />
     <Compile Include="../SmartTaskbar/Models/EdgeDwell.cs" Link="EdgeDwell.cs" />
     <Compile Include="../SmartTaskbar/Models/TaskbarInfo.cs" Link="TaskbarInfo.cs" />
+    <Compile Include="../SmartTaskbar/Models/TaskbarCoverage.cs" Link="TaskbarCoverage.cs" />
     <Compile Include="../SmartTaskbar/Models/TaskbarPosition.cs" Link="TaskbarPosition.cs" />
   </ItemGroup>
 </Project>

@@ -25,6 +25,16 @@ namespace SmartTaskbar
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool UnregisterHotKey(IntPtr hwnd, int id);
 
+        internal delegate bool EnumWindowCallback(IntPtr hwnd, IntPtr parameter);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool EnumWindows(EnumWindowCallback callback, IntPtr parameter);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        internal static extern int GetWindowStyle(IntPtr hwnd, int index);
+
+
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         internal static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string? title);
 

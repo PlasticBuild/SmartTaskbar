@@ -28,7 +28,7 @@ namespace SmartTaskbar
             var exit = new ToolStripMenuItem(resources.GetString(LangName.Exit)) { Font = _font };
 
             _menu = new ContextMenuStrip(_container) { Renderer = new Win11Renderer() };
-            _menu.Items.AddRange([about, animation, new ToolStripSeparator(), dock, auto, show,
+            _menu.Items.AddRange([about, animation, new ToolStripSeparator(), auto, dock, show,
                 new ToolStripSeparator(), showOnExit, exit]);
 
             _notifyIcon = new NotifyIcon(_container)
@@ -58,9 +58,10 @@ namespace SmartTaskbar
                 if (args.Button != MouseButtons.Left)
                     return;
 
-                ChangeMode(AutoModeType.None);
-                Fun.SetAutoHide(!Fun.IsAutoHide());
-                HideAutoHiddenBar();
+                if (UserSettings.AutoModeType == AutoModeType.None)
+                    ChangeMode(AutoModeType.Auto);
+                else
+                    PauseAutoHide();
             };
             about.Click += (_, _) => Process.Start(new ProcessStartInfo("https://github.com/Oliviaophia/SmartTaskbar")
                 { UseShellExecute = true });
@@ -78,8 +79,10 @@ namespace SmartTaskbar
 
         private void ToggleMode(AutoModeType mode, bool isChecked)
         {
-            ChangeMode(isChecked ? AutoModeType.None : mode);
-            HideAutoHiddenBar();
+            if (isChecked)
+                PauseAutoHide();
+            else
+                ChangeMode(mode);
         }
 
         private void ChangeMode(AutoModeType mode)

@@ -9,6 +9,8 @@ namespace SmartTaskbar
         private const uint ForegroundChanged = 0x0003;
         private const uint MoveSizeEnded = 0x000B;
         private const uint MinimizeEnded = 0x0017;
+        private const uint ObjectDestroyed = 0x8001;
+        private const uint ObjectHidden = 0x8003;
         private const uint LocationChanged = 0x800B;
         private const uint SkipOwnProcess = 2;
         private const int CloseWindow = 0x0010;
@@ -20,6 +22,7 @@ namespace SmartTaskbar
         private const string WindowCaption = "SmartTaskbar Monitor";
         private const int EdgeDismissMs = 240;
         private const int CommandCooldownMs = 550;
+        private const int OverlapRecoveryMs = 1_800;
         private static readonly uint ShowTaskbarsMessage =
             RegisterWindowMessage("SmartTaskbar.ShowTaskbars.959d3545-aa5c-42a8-a327-6e2c079daa94");
 
@@ -29,7 +32,8 @@ namespace SmartTaskbar
         private readonly Timer _watchdog = new() { Interval = 1250 };
         private readonly Timer _cursorSampler = new() { Interval = 80 };
         private readonly WinEventCallback _onWindowEvent;
-        private readonly IntPtr[] _hooks = new IntPtr[3];
+        private readonly EnumWindowCallback _inspectWindow;
+        private readonly IntPtr[] _hooks = new IntPtr[4];
         private readonly uint _taskbarCreated = RegisterWindowMessage("TaskbarCreated");
 
         private IntPtr _shell;
@@ -38,7 +42,14 @@ namespace SmartTaskbar
         private AutoModeType _mode;
         private bool _topologyDirty = true;
         private bool _autoHideEstablished;
+        private bool _nativeAutoHideRequested;
+        private bool _overlapRecovery;
+        private bool _fullscreenNeedsAutoHide;
+        private TaskbarCoverage[] _coverage = [];
+        private AutoHideTransition _transition;
         private long _nextRefresh;
+        private long _nextNativeCommand;
+        private long _unsettledOverlapSince;
         private long _nextCommand;
         private EdgeDwell _dwell;
         private TaskbarInfo? _edgeReveal;
@@ -54,6 +65,7 @@ namespace SmartTaskbar
         public Engine()
         {
             _onWindowEvent = OnWindowEvent;
+            _inspectWindow = InspectWindow;
             _update.Tick += (_, _) =>
             {
                 _update.Stop();
@@ -87,6 +99,13 @@ namespace SmartTaskbar
             }
 
             _mode = mode;
+            _nativeAutoHideRequested = false;
+            _autoHideEstablished = false;
+            _overlapRecovery = false;
+            _fullscreenNeedsAutoHide = false;
+            _unsettledOverlapSince = 0;
+            _transition = default;
+            _nextNativeCommand = 0;
             if (mode == AutoModeType.None)
             {
                 _update.Stop();
@@ -96,7 +115,6 @@ namespace SmartTaskbar
                 _dismissBar = IntPtr.Zero;
                 _nextCommand = 0;
                 _shell = IntPtr.Zero;
-                _autoHideEstablished = false;
                 if (RestoreHotkeyRegistered)
                 {
                     UnregisterHotKey(Handle, RestoreHotkeyId);
@@ -114,10 +132,12 @@ namespace SmartTaskbar
                 _hooks[0] = WatchEvent(ForegroundChanged);
                 _hooks[1] = WatchEvent(MoveSizeEnded);
                 _hooks[2] = WatchEvent(MinimizeEnded);
+                _hooks[3] = SetWinEventHook(ObjectDestroyed, ObjectHidden, IntPtr.Zero, _onWindowEvent,
+                    0, 0, SkipOwnProcess);
             }
 
             _topologyDirty = true;
-            _watchdog.Interval = mode == AutoModeType.Dock ? 2500 : 1250;
+            _watchdog.Interval = mode == AutoModeType.Dock ? 2500 : 850;
             _watchdog.Start();
             QueueUpdate();
         }
@@ -141,8 +161,12 @@ namespace SmartTaskbar
         private void OnWindowEvent(IntPtr hook, uint eventType, IntPtr hwnd,
             int idObject, int idChild, uint threadId, uint time)
         {
-            if (eventType != LocationChanged || (hwnd == _foreground && idObject == 0 && idChild == 0))
-                QueueUpdate();
+            if (eventType >= ObjectDestroyed && (hwnd == IntPtr.Zero || idObject != 0 || idChild != 0))
+                return;
+            if (eventType == LocationChanged && hwnd != _foreground)
+                return;
+
+            QueueUpdate();
         }
 
         protected override void WndProc(ref Message message)
@@ -169,10 +193,14 @@ namespace SmartTaskbar
             base.WndProc(ref message);
         }
 
-        private void QueueUpdate()
+        private void QueueUpdate(int delay = 65)
         {
-            if (_mode != AutoModeType.None && !_update.Enabled)
-                _update.Start();
+            if (_mode == AutoModeType.None || (_update.Enabled && _update.Interval <= delay))
+                return;
+
+            _update.Stop();
+            _update.Interval = delay;
+            _update.Start();
         }
 
         private void RefreshTaskbars(long now)
@@ -184,30 +212,18 @@ namespace SmartTaskbar
                 ClearEdgeReveal();
                 _dismissBar = IntPtr.Zero;
                 _nextCommand = 0;
+                _nextNativeCommand = 0;
                 _autoHideEstablished = false;
-            }
-
-            if (_shell != IntPtr.Zero)
-            {
-                if (IsAutoHide())
-                {
-                    _autoHideEstablished = true;
-                }
-                else if (_autoHideEstablished)
-                {
-                    // Respect a user who disables auto-hide in Windows Settings.
-                    ShowTaskbarsRequested?.Invoke(this, EventArgs.Empty);
-                    return;
-                }
-                else
-                {
-                    SetAutoHide(true);
-                    _autoHideEstablished = IsAutoHide();
-                }
+                _overlapRecovery = false;
+                _fullscreenNeedsAutoHide = false;
+                _unsettledOverlapSince = 0;
+                _transition = default;
             }
 
             var displays = Array.ConvertAll(Screen.AllScreens, screen => screen.Bounds);
             TaskbarHelper.ReadTaskbars(_shell, displays, _bars);
+            if (_coverage.Length != _bars.Count)
+                _coverage = new TaskbarCoverage[_bars.Count];
             _edges.Clear();
             foreach (var bar in _bars)
             {
@@ -216,8 +232,7 @@ namespace SmartTaskbar
                     _edges.Add((bar, band));
             }
 
-            _cursorSampler.Enabled = _autoHideEstablished && _edges.Count > 0;
-            if (!_cursorSampler.Enabled || (_edgeReveal is { } reveal && !_bars.Contains(reveal)))
+            if (_edgeReveal is { } reveal && !_bars.Contains(reveal))
                 ClearEdgeReveal();
 
             _topologyDirty = false;
@@ -233,72 +248,190 @@ namespace SmartTaskbar
             if (_topologyDirty || now >= _nextRefresh)
                 RefreshTaskbars(now);
 
-            if (_mode != AutoModeType.Auto || !_autoHideEstablished || _bars.Count == 0 || _edgeReveal.HasValue || MenuOpen)
+            if (_shell == IntPtr.Zero || _bars.Count == 0)
+                return;
+
+            var actual = IsAutoHide();
+            if (_nativeAutoHideRequested && _autoHideEstablished && !actual)
+            {
+                // Respect Windows Settings when the user switches off auto-hide on this shell.
+                ShowTaskbarsRequested?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+
+            if (_mode == AutoModeType.Dock)
+            {
+                ApplyAutoHide(true, actual, now);
+                return;
+            }
+
+            if (MenuOpen || _edgeReveal.HasValue)
                 return;
 
             var foreground = GetForegroundWindow();
             WatchForegroundLocation(foreground);
-            var foregroundClass = foreground.GetClassName();
-            if (TaskbarHelper.IsTraySurface(foregroundClass))
+            if (TaskbarHelper.IsTraySurface(foreground.GetClassName()))
                 return;
 
-            var desktop = TaskbarHelper.IsDesktop(foregroundClass);
-            var window = Rectangle.Empty;
-            if (!desktop)
+            Array.Clear(_coverage);
+            EnumWindows(_inspectWindow, IntPtr.Zero);
+
+            var fullscreen = Array.IndexOf(_coverage, TaskbarCoverage.Fullscreen) >= 0;
+            if (!fullscreen)
+                _fullscreenNeedsAutoHide = false;
+            else if (!actual)
+                _fullscreenNeedsAutoHide = FullscreenTrayIsInFront();
+
+            // Give Explorer time to move its own tray behind fullscreen before changing auto-hide.
+            var hasCover = _fullscreenNeedsAutoHide || Array.IndexOf(_coverage, TaskbarCoverage.Overlap) >= 0;
+            if (!hasCover)
             {
-                if (foreground == IntPtr.Zero || foreground.IsWindowInvisible()
-                    || !TryGetVisibleBounds(foreground, out var bounds))
-                    return;
-                window = bounds.ToRectangle();
+                _overlapRecovery = false;
+                _unsettledOverlapSince = 0;
+            }
+
+            var wanted = hasCover && !_overlapRecovery;
+            if (!_transition.IsReady(actual, wanted, now, _fullscreenNeedsAutoHide ? 400 : 125))
+            {
+                QueueUpdate();
+                return;
+            }
+
+            ApplyAutoHide(wanted, actual, now);
+            if (wanted && _autoHideEstablished)
+                ShowUncoveredTaskbar(now, !actual);
+        }
+
+        private void ApplyAutoHide(bool wanted, bool actual, long now)
+        {
+            _nativeAutoHideRequested = wanted;
+            if (wanted != actual && now >= _nextNativeCommand)
+            {
+                SetAutoHide(wanted);
+                _nextNativeCommand = now + 450;
+                actual = IsAutoHide();
+                _nextCommand = now + 180;
+                if (actual == wanted && wanted && _mode == AutoModeType.Auto)
+                    QueueUpdate(180);
+            }
+
+            _autoHideEstablished = wanted && actual;
+            _cursorSampler.Enabled = _autoHideEstablished && _edges.Count > 0;
+            if (!_cursorSampler.Enabled)
+                ClearEdgeReveal();
+        }
+
+        private bool InspectWindow(IntPtr window, IntPtr parameter)
+        {
+            const int ExtendedStyle = -20;
+            const int Style = -16;
+            const int ToolWindow = 0x80;
+            const int NoActivate = 0x08000000;
+            const int Caption = 0x00C00000;
+
+            if (window.IsWindowInvisible() || !TryGetVisibleBounds(window, out var bounds))
+                return true;
+
+            var rect = bounds.ToRectangle();
+            var windowClass = window.GetClassName();
+            if (TaskbarHelper.IsDesktop(windowClass) || TaskbarHelper.IsTraySurface(windowClass) ||
+                (GetWindowStyle(window, ExtendedStyle) & (ToolWindow | NoActivate)) != 0)
+                return true;
+
+            var maximized = IsZoomed(window);
+            var hasCaption = maximized && (GetWindowStyle(window, Style) & Caption) == Caption;
+            for (var index = 0; index < _bars.Count; index++)
+            {
+                var value = _bars[index].CoverageFrom(rect, maximized, hasCaption);
+                if (value > _coverage[index])
+                    _coverage[index] = value;
+            }
+            return true;
+        }
+
+        private bool FullscreenTrayIsInFront()
+        {
+            for (var index = 0; index < _bars.Count; index++)
+            {
+                if (_coverage[index] != TaskbarCoverage.Fullscreen)
+                    continue;
+
+                var bar = _bars[index];
+                var rect = bar.ShownBounds;
+                if (WindowAt(new Point(rect.Left + rect.Width / 2, rect.Top + rect.Height / 2)) == bar.Handle)
+                    return true;
+            }
+            return false;
+        }
+
+        private void ShowUncoveredTaskbar(long now, bool justEnabled)
+        {
+            if (!justEnabled && now < _nextCommand)
+            {
+                QueueUpdate((int)(_nextCommand - now));
+                return;
             }
 
             var cursor = Cursor.Position;
             var cursorMonitor = MonitorFromPoint(new TagPoint { x = cursor.X, y = cursor.Y }, 0);
-            var activeMonitor = desktop ? cursorMonitor : MonitorFromWindow(foreground, 2);
-            var maximized = !desktop && IsZoomed(foreground);
-            var hovered = false;
             var coveredBarShown = false;
             TaskbarInfo? preferred = null;
             var preferredShown = false;
-            var bestPriority = 0;
 
-            foreach (var bar in _bars)
+            for (var index = 0; index < _bars.Count; index++)
             {
+                var bar = _bars[index];
                 var shown = TaskbarHelper.IsShown(bar);
-                if (shown && bar.ShownBounds.Contains(cursor))
-                    hovered |= IsTaskbarInteraction(bar, cursor);
+                if (shown && bar.ShownBounds.Contains(cursor) && IsTaskbarInteraction(bar, cursor))
+                {
+                    _unsettledOverlapSince = 0;
+                    return;
+                }
 
-                if (bar.IsCoveredBy(window, activeMonitor, maximized))
+                if (_coverage[index] != TaskbarCoverage.Clear)
                 {
                     coveredBarShown |= shown;
                     continue;
                 }
 
-                if (!desktop && bar.Monitor != activeMonitor && !shown && !IsDesktopExposed(bar))
-                    continue;
-
-                var priority = bar.Monitor == activeMonitor ? 3 : bar.Monitor == cursorMonitor ? 2 : 1;
-                if (priority <= bestPriority)
+                if (preferred.HasValue && bar.Monitor != cursorMonitor)
                     continue;
 
                 preferred = bar;
                 preferredShown = shown;
-                bestPriority = priority;
             }
 
-            if (hovered || now < _nextCommand)
-                return;
+            if (coveredBarShown || (preferred.HasValue && !preferredShown))
+            {
+                if (_unsettledOverlapSince == 0)
+                    _unsettledOverlapSince = now;
+                else if (now - _unsettledOverlapSince >= OverlapRecoveryMs)
+                {
+                    // A stuck Explorer animation must not strand an uncovered taskbar.
+                    _overlapRecovery = true;
+                    ApplyAutoHide(false, true, now);
+                    return;
+                }
+            }
+            else
+            {
+                _unsettledOverlapSince = 0;
+            }
 
             // Explorer normally keeps one programmatically revealed tray active at a time.
-            if (preferred is { } target && !preferredShown)
+            if (preferred is { } target && (!preferredShown || justEnabled))
             {
                 if (TaskbarHelper.Reveal(_shell, target.Monitor))
+                {
                     _nextCommand = now + CommandCooldownMs;
+                    QueueUpdate(CommandCooldownMs);
+                }
             }
-            else if (coveredBarShown)
+            else if (coveredBarShown && !justEnabled)
             {
                 TaskbarHelper.Hide(_shell);
                 _nextCommand = now + CommandCooldownMs;
+                QueueUpdate(CommandCooldownMs);
             }
         }
 
@@ -310,25 +443,6 @@ namespace SmartTaskbar
 
         private static IntPtr WindowAt(Point point)
             => GetAncestor(WindowFromPoint(new TagPoint { x = point.X, y = point.Y }), TaskbarHelper.RootWindow);
-
-        private static bool IsDesktopExposed(TaskbarInfo bar)
-        {
-            var bounds = bar.ShownBounds;
-            var horizontal = bar.Edge is TaskbarPosition.Top or TaskbarPosition.Bottom;
-            for (var part = 1; part <= 3; part++)
-            {
-                var point = new TagPoint
-                {
-                    x = bounds.Left + bounds.Width * (horizontal ? part : 2) / 4,
-                    y = bounds.Top + bounds.Height * (horizontal ? 2 : part) / 4
-                };
-                var hit = GetAncestor(WindowFromPoint(point), TaskbarHelper.RootWindow);
-                if (!TaskbarHelper.IsDesktop(hit.GetClassName()))
-                    return false;
-            }
-
-            return true;
-        }
 
         private void SampleTaskbarEdges()
         {

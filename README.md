@@ -13,13 +13,13 @@ SmartTaskbar  <img src="https://github.com/ChanpleCai/SmartTaskbar/blob/main/log
 
 ## Windows desktop preview
 
-**Dock auto-hide** reveals the taskbar when you pause the pointer near the taskbar edge of either display. On vertically stacked displays, pause just above the shared edge to reveal the upper taskbar. A quick crossing leaves SmartTaskbar's reveal inactive.
+**Intelligent auto-hide** keeps the taskbars visible on the desktop and while windows leave their space clear. Fullscreen can cover a taskbar on its own display while the other taskbar stays accessible. An ordinary window that overlaps the taskbar triggers auto-hide, and the taskbars return when the space clears.
 
-**Hide on window overlap** is the original SmartTaskbar mode. It uses the foreground window to decide whether the taskbar should be shown and checks each taskbar against its own display.
+**Always auto-hide** keeps the taskbars hidden until you pause the pointer near the edge. On stacked displays, pause just above the shared edge to reveal the upper taskbar. A quick crossing leaves SmartTaskbar's reveal inactive.
 
-Dock auto-hide is the default for new settings. Use the tray menu to switch modes, or double-click the tray icon to toggle the Windows auto-hide setting. For access on secondary displays, enable **Show my taskbar on all displays** in Windows Settings. Explorer controls which taskbar positions support native auto-hide.
+Intelligent auto-hide is the default for new settings. Use the tray menu to switch modes, or double-click the tray icon to pause or resume intelligent auto-hide. For access on secondary displays, enable **Show my taskbar on all displays** in Windows Settings. Explorer controls which taskbar positions support native auto-hide.
 
-Press **Ctrl+Alt+Shift+T** or choose **Show both taskbars** in the tray menu to pause SmartTaskbar and restore the visible Windows taskbars. Turning off Windows auto-hide in Settings also pauses SmartTaskbar. Use the tray menu to turn **Dock auto-hide** on again. The `SmartTaskbar.exe --show-taskbars` command is available for a desktop or Start menu shortcut.
+Press **Ctrl+Alt+Shift+T** or choose **Show both taskbars** in the tray menu to pause SmartTaskbar and restore the visible Windows taskbars. Turning off Windows auto-hide in Settings also pauses SmartTaskbar if it was using auto-hide. Use the tray menu to turn **Intelligent auto-hide** on again. The `SmartTaskbar.exe --show-taskbars` command is available for a desktop or Start menu shortcut.
 
 SmartTaskbar rediscovers the taskbars after Explorer restarts. When **Show taskbar on exit** is enabled, the app gives Explorer a short time to finish hiding an open bar before it restores the visible taskbars.
 

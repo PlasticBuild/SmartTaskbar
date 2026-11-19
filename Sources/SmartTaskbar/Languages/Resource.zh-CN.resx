@@ -124,10 +124,10 @@
     <value>任务栏中的动画</value>
   </data>
   <data name="tray_auto" xml:space="preserve">
-    <value>窗口重叠时隐藏</value>
+    <value>智能自动隐藏</value>
   </data>
   <data name="tray_dock" xml:space="preserve">
-    <value>程序坞式自动隐藏</value>
+    <value>始终自动隐藏</value>
   </data>
   <data name="tray_showTaskbars" xml:space="preserve">
     <value>显示所有任务栏</value>

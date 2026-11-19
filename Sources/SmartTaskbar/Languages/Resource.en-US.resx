@@ -124,10 +124,10 @@
     <value>Animations in the taskbar</value>
   </data>
   <data name="tray_auto" xml:space="preserve">
-    <value>Hide on window overlap</value>
+    <value>Intelligent auto-hide</value>
   </data>
   <data name="tray_dock" xml:space="preserve">
-    <value>Dock auto-hide</value>
+    <value>Always auto-hide</value>
   </data>
   <data name="tray_showTaskbars" xml:space="preserve">
     <value>Show both taskbars</value>

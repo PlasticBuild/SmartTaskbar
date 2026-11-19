@@ -22,8 +22,8 @@ namespace SmartTaskbar
             get => (Read(nameof(AutoModeType)) as string) switch
             {
                 nameof(AutoModeType.None) => AutoModeType.None,
-                nameof(AutoModeType.Auto) => AutoModeType.Auto,
-                _ => AutoModeType.Dock
+                nameof(AutoModeType.Dock) => AutoModeType.Dock,
+                _ => AutoModeType.Auto
             };
             set => Write(nameof(AutoModeType), value.ToString());
         }
