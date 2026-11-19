@@ -129,6 +129,9 @@
   <data name="tray_dock" xml:space="preserve">
     <value>程序坞式自动隐藏</value>
   </data>
+  <data name="tray_showTaskbars" xml:space="preserve">
+    <value>显示所有任务栏</value>
+  </data>
   <data name="tray_exit" xml:space="preserve">
     <value>退出</value>
   </data>

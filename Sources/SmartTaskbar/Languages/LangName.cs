@@ -10,6 +10,8 @@
 
         public const string Dock = "tray_dock";
 
+        public const string ShowTaskbars = "tray_showTaskbars";
+
         public const string Exit = "tray_exit";
 
         public const string ShowBarOnExit = "tray_showBarOnExit";

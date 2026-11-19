@@ -19,34 +19,20 @@ namespace SmartTaskbar
                 ? visible.Height : visible.Width;
         }
 
-        public Rectangle SharedEdgeBand(Rectangle otherDisplay)
+        public Rectangle RevealBand()
         {
-            var horizontal = Edge is TaskbarPosition.Bottom or TaskbarPosition.Top;
-            var thickness = Math.Clamp((horizontal ? ShownBounds.Height : ShownBounds.Width) / 8, 4, 16);
-            Rectangle band;
-            switch (Edge)
+            var depth = Edge is TaskbarPosition.Bottom or TaskbarPosition.Top
+                ? ShownBounds.Height : ShownBounds.Width;
+            var thickness = Math.Min(depth, Math.Clamp(depth / 3, 16, 48));
+            var bar = ShownBounds;
+            return Edge switch
             {
-                case TaskbarPosition.Bottom when Display.Bottom == otherDisplay.Top:
-                    band = Rectangle.FromLTRB(otherDisplay.Left, Display.Bottom - thickness,
-                        otherDisplay.Right, Display.Bottom);
-                    break;
-                case TaskbarPosition.Top when Display.Top == otherDisplay.Bottom:
-                    band = Rectangle.FromLTRB(otherDisplay.Left, Display.Top,
-                        otherDisplay.Right, Display.Top + thickness);
-                    break;
-                case TaskbarPosition.Left when Display.Left == otherDisplay.Right:
-                    band = Rectangle.FromLTRB(Display.Left, otherDisplay.Top,
-                        Display.Left + thickness, otherDisplay.Bottom);
-                    break;
-                case TaskbarPosition.Right when Display.Right == otherDisplay.Left:
-                    band = Rectangle.FromLTRB(Display.Right - thickness, otherDisplay.Top,
-                        Display.Right, otherDisplay.Bottom);
-                    break;
-                default:
-                    return Rectangle.Empty;
-            }
-
-            return Rectangle.Intersect(band, ShownBounds);
+                TaskbarPosition.Bottom => Rectangle.FromLTRB(bar.Left, bar.Bottom - thickness, bar.Right, bar.Bottom),
+                TaskbarPosition.Top => Rectangle.FromLTRB(bar.Left, bar.Top, bar.Right, bar.Top + thickness),
+                TaskbarPosition.Left => Rectangle.FromLTRB(bar.Left, bar.Top, bar.Left + thickness, bar.Bottom),
+                TaskbarPosition.Right => Rectangle.FromLTRB(bar.Right - thickness, bar.Top, bar.Right, bar.Bottom),
+                _ => Rectangle.Empty
+            };
         }
 
         public bool IsCoveredBy(Rectangle window, IntPtr windowMonitor, bool maximized)

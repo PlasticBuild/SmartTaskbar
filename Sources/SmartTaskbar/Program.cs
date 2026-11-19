@@ -6,11 +6,18 @@ namespace SmartTaskbar
         ///     The main entry point for the application.
         /// </summary>
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
             // Use a mutex to ensure single instance
             using (new Mutex(true, "{959d3545-aa5c-42a8-a327-6e2c079daa94}", out var createNew))
             {
+                if (args is ["--show-taskbars"])
+                {
+                    if (createNew || !Engine.TryRequestShowTaskbars())
+                        SystemTray.ShowWindowsTaskbars();
+                    return;
+                }
+
                 if (!createNew) return;
 
                 ApplicationConfiguration.Initialize();

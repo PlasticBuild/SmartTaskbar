@@ -23,11 +23,12 @@ namespace SmartTaskbar
             var animation = new ToolStripMenuItem(resources.GetString(LangName.Animation)) { Font = _font };
             var auto = new ToolStripMenuItem(resources.GetString(LangName.Auto)) { Font = _font };
             var dock = new ToolStripMenuItem(resources.GetString(LangName.Dock)) { Font = _font };
+            var show = new ToolStripMenuItem(resources.GetString(LangName.ShowTaskbars)) { Font = _font };
             var showOnExit = new ToolStripMenuItem(resources.GetString(LangName.ShowBarOnExit)) { Font = _font };
             var exit = new ToolStripMenuItem(resources.GetString(LangName.Exit)) { Font = _font };
 
             _menu = new ContextMenuStrip(_container) { Renderer = new Win11Renderer() };
-            _menu.Items.AddRange([about, animation, new ToolStripSeparator(), dock, auto,
+            _menu.Items.AddRange([about, animation, new ToolStripSeparator(), dock, auto, show,
                 new ToolStripSeparator(), showOnExit, exit]);
 
             _notifyIcon = new NotifyIcon(_container)
@@ -47,6 +48,7 @@ namespace SmartTaskbar
                 var mode = UserSettings.AutoModeType;
                 auto.Checked = mode == AutoModeType.Auto;
                 dock.Checked = mode == AutoModeType.Dock;
+                show.ShortcutKeyDisplayString = _engine.RestoreHotkeyRegistered ? "Ctrl+Alt+Shift+T" : string.Empty;
                 showOnExit.Checked = UserSettings.ShowTaskbarWhenExit;
             };
             _menu.Opened += (_, _) => _engine.MenuOpen = true;
@@ -66,8 +68,10 @@ namespace SmartTaskbar
             showOnExit.Click += (_, _) => UserSettings.ShowTaskbarWhenExit = !showOnExit.Checked;
             auto.Click += (_, _) => ToggleMode(AutoModeType.Auto, auto.Checked);
             dock.Click += (_, _) => ToggleMode(AutoModeType.Dock, dock.Checked);
+            show.Click += (_, _) => PauseAutoHide();
             exit.Click += (_, _) => ExitThread();
             _engine.CloseRequested += (_, _) => ExitThread();
+            _engine.ShowTaskbarsRequested += (_, _) => PauseAutoHide();
 
             _engine.SetMode(UserSettings.AutoModeType);
         }
@@ -82,6 +86,19 @@ namespace SmartTaskbar
         {
             UserSettings.AutoModeType = mode;
             _engine.SetMode(mode);
+        }
+
+        private void PauseAutoHide()
+        {
+            _engine.SetMode(AutoModeType.None);
+            ShowWindowsTaskbars();
+        }
+
+        internal static void ShowWindowsTaskbars()
+        {
+            Fun.SetAutoHide(false);
+            if (UserSettings.AutoModeType != AutoModeType.None)
+                UserSettings.AutoModeType = AutoModeType.None;
         }
 
         private static Icon GetIcon() => Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White;

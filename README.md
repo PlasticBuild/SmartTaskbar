@@ -13,11 +13,13 @@ SmartTaskbar  <img src="https://github.com/ChanpleCai/SmartTaskbar/blob/main/log
 
 ## Windows desktop preview
 
-**Dock auto-hide** keeps the Windows taskbar hidden until you move the pointer to its edge. When two displays share that edge, pause briefly just inside the display whose taskbar you want. Crossing to the other display without pausing leaves SmartTaskbar's reveal inactive. The outer screen edges use Explorer's native auto-hide.
+**Dock auto-hide** reveals the taskbar when you pause the pointer near the taskbar edge of either display. On vertically stacked displays, pause just above the shared edge to reveal the upper taskbar. A quick crossing leaves SmartTaskbar's reveal inactive.
 
 **Hide on window overlap** is the original SmartTaskbar mode. It uses the foreground window to decide whether the taskbar should be shown and checks each taskbar against its own display.
 
 Dock auto-hide is the default for new settings. Use the tray menu to switch modes, or double-click the tray icon to toggle the Windows auto-hide setting. For access on secondary displays, enable **Show my taskbar on all displays** in Windows Settings. Explorer controls which taskbar positions support native auto-hide.
+
+Press **Ctrl+Alt+Shift+T** or choose **Show both taskbars** in the tray menu to pause SmartTaskbar and restore the visible Windows taskbars. Turning off Windows auto-hide in Settings also pauses SmartTaskbar. Use the tray menu to turn **Dock auto-hide** on again. The `SmartTaskbar.exe --show-taskbars` command is available for a desktop or Start menu shortcut.
 
 SmartTaskbar rediscovers the taskbars after Explorer restarts. When **Show taskbar on exit** is enabled, the app gives Explorer a short time to finish hiding an open bar before it restores the visible taskbars.
 

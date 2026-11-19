@@ -1,6 +1,6 @@
 namespace SmartTaskbar
 {
-    internal struct SharedEdgeDwell
+    internal struct EdgeDwell
     {
         private const int DelayMs = 180;
         private const int RetryDelayMs = 400;

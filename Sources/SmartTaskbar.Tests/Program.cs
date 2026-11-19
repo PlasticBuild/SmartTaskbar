@@ -3,7 +3,6 @@ using SmartTaskbar;
 
 var upper = new Rectangle(-200, -1440, 2560, 1440);
 var lower = new Rectangle(0, 0, 1920, 1080);
-var beside = new Rectangle(2360, -1440, 1920, 1080);
 var upperBar = new TaskbarInfo((IntPtr)10, (IntPtr)1, upper,
     new Rectangle(-200, -151, 2560, 151), TaskbarPosition.Bottom);
 var lowerBar = new TaskbarInfo((IntPtr)20, (IntPtr)2, lower,
@@ -22,21 +21,25 @@ Expect(upperBar.VisibleThickness(hiddenUpper) == 2
 Expect(upperBar.IsShown(upperBar.ShownBounds), "A fully docked bar counts as shown");
 Expect(!upperBar.IsShown(new Rectangle(2360, -151, 2560, 151)), "A bar on a different display is hidden here");
 
-var band = upperBar.SharedEdgeBand(lower);
-Expect(band == new Rectangle(0, -16, 1920, 16), "The seam is clipped to the shared span");
-Expect(band.Contains(400, -8) && !band.Contains(400, 0) && !band.Contains(-1, -8),
+var band = upperBar.RevealBand();
+Expect(band == new Rectangle(-200, -48, 2560, 48), "The reveal band covers the full taskbar edge");
+Expect(band.Contains(400, -24) && !band.Contains(400, 0) && !band.Contains(400, -49),
     "Only the upper side of the shared edge triggers the upper bar");
-Expect(lowerBar.SharedEdgeBand(upper).IsEmpty, "The lower bottom edge is an exterior edge");
-Expect(upperBar.SharedEdgeBand(beside).IsEmpty, "Side-by-side monitors do not share a bottom edge");
+Expect(lowerBar.RevealBand() == new Rectangle(0, 1064, 1920, 16),
+    "The lower exterior edge gets its own reveal band");
+Expect(band.Contains(-180, -24), "The unshared portion of an offset monitor can also reveal the bar");
 
-var leftDisplay = new Rectangle(-2200, -1200, 2000, 1200);
 var leftBar = new TaskbarInfo((IntPtr)30, (IntPtr)1, upper,
     new Rectangle(-200, -1440, 80, 1440), TaskbarPosition.Left);
-Expect(leftBar.SharedEdgeBand(leftDisplay) == new Rectangle(-200, -1200, 10, 1200),
-    "A vertical edge uses the adjoining monitor's vertical span");
+Expect(leftBar.RevealBand() == new Rectangle(-200, -1440, 26, 1440),
+    "A left-side taskbar can reveal from its outer edge");
 var topBar = new TaskbarInfo((IntPtr)40, (IntPtr)2, lower, new Rectangle(0, 0, 1920, 48), TaskbarPosition.Top);
-Expect(topBar.SharedEdgeBand(upper) == new Rectangle(0, 0, 1920, 6),
+Expect(topBar.RevealBand() == new Rectangle(0, 0, 1920, 16),
     "A top-edge bar can reveal from the lower side of a seam");
+var rightBar = new TaskbarInfo((IntPtr)50, (IntPtr)1, upper,
+    new Rectangle(2280, -1440, 80, 1440), TaskbarPosition.Right);
+Expect(rightBar.RevealBand() == new Rectangle(2334, -1440, 26, 1440),
+    "A right-side taskbar can reveal from its outer edge");
 
 var spanning = Rectangle.FromLTRB(350, -450, 1560, 1060);
 Expect(upperBar.IsCoveredBy(spanning, lowerBar.Monitor, false)
@@ -46,7 +49,7 @@ Expect(!upperBar.IsCoveredBy(spanning, lowerBar.Monitor, true)
 Expect(!upperBar.IsCoveredBy(Rectangle.FromLTRB(0, -250, 800, -151), upperBar.Monitor, false),
     "Touching the taskbar boundary leaves the bar clear");
 
-var dwell = new SharedEdgeDwell();
+var dwell = new EdgeDwell();
 Expect(!dwell.IsReady(upperBar.Handle, 1000) && !dwell.IsReady(upperBar.Handle, 1179),
     "Brief seam entry does not reveal a taskbar");
 dwell = default;
@@ -61,7 +64,7 @@ Expect(dwell.TryRequestReveal(2180) && !dwell.TryRequestReveal(3000),
 Expect(!dwell.IsReady(upperBar.Handle, 3010) && dwell.TryRequestReveal(3190),
     "A new taskbar gets its own reveal attempts");
 
-Console.WriteLine("21 taskbar geometry and dwell checks passed.");
+Console.WriteLine("22 taskbar geometry and dwell checks passed.");
 
 static void Expect(bool condition, string message)
 {

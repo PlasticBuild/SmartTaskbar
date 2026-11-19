@@ -14,11 +14,17 @@ namespace SmartTaskbar
         private const int CloseWindow = 0x0010;
         private const int SettingChanged = 0x001A;
         private const int DisplayChanged = 0x007E;
-        private const int SeamDismissMs = 240;
+        private const int Hotkey = 0x0312;
+        private const int RestoreHotkeyId = 1;
+        private const uint RestoreModifiers = 0x4000 | 0x0004 | 0x0002 | 0x0001; // No repeat, Shift, Ctrl, Alt
+        private const string WindowCaption = "SmartTaskbar Monitor";
+        private const int EdgeDismissMs = 240;
         private const int CommandCooldownMs = 550;
+        private static readonly uint ShowTaskbarsMessage =
+            RegisterWindowMessage("SmartTaskbar.ShowTaskbars.959d3545-aa5c-42a8-a327-6e2c079daa94");
 
         private readonly List<TaskbarInfo> _bars = new();
-        private readonly List<(TaskbarInfo Bar, Rectangle Band)> _seams = new();
+        private readonly List<(TaskbarInfo Bar, Rectangle Band)> _edges = new();
         private readonly Timer _update = new() { Interval = 65 };
         private readonly Timer _watchdog = new() { Interval = 1250 };
         private readonly Timer _cursorSampler = new() { Interval = 80 };
@@ -31,16 +37,19 @@ namespace SmartTaskbar
         private IntPtr _locationHook;
         private AutoModeType _mode;
         private bool _topologyDirty = true;
+        private bool _autoHideEstablished;
         private long _nextRefresh;
         private long _nextCommand;
-        private SharedEdgeDwell _dwell;
-        private TaskbarInfo? _seamReveal;
-        private bool _seamConfirmed;
+        private EdgeDwell _dwell;
+        private TaskbarInfo? _edgeReveal;
+        private bool _edgeConfirmed;
         private IntPtr _dismissBar;
         private long _dismissAfter;
 
         public bool MenuOpen { get; set; }
+        public bool RestoreHotkeyRegistered { get; private set; }
         public event EventHandler? CloseRequested;
+        public event EventHandler? ShowTaskbarsRequested;
 
         public Engine()
         {
@@ -51,10 +60,17 @@ namespace SmartTaskbar
                 Update();
             };
             _watchdog.Tick += (_, _) => Update();
-            _cursorSampler.Tick += (_, _) => SampleSharedEdge();
+            _cursorSampler.Tick += (_, _) => SampleTaskbarEdges();
 
             // A top-level hidden window receives Explorer and display broadcasts.
-            CreateHandle(new CreateParams { Caption = "SmartTaskbar Monitor" });
+            CreateHandle(new CreateParams { Caption = WindowCaption });
+        }
+
+        internal static bool TryRequestShowTaskbars()
+        {
+            var window = FindWindow(null, WindowCaption);
+            return window != IntPtr.Zero && ShowTaskbarsMessage != 0 &&
+                PostMessage(window, ShowTaskbarsMessage, IntPtr.Zero, IntPtr.Zero);
         }
 
         public void SetMode(AutoModeType mode)
@@ -76,12 +92,21 @@ namespace SmartTaskbar
                 _update.Stop();
                 _watchdog.Stop();
                 _cursorSampler.Stop();
-                ClearSeam();
+                ClearEdgeReveal();
                 _dismissBar = IntPtr.Zero;
                 _nextCommand = 0;
                 _shell = IntPtr.Zero;
+                _autoHideEstablished = false;
+                if (RestoreHotkeyRegistered)
+                {
+                    UnregisterHotKey(Handle, RestoreHotkeyId);
+                    RestoreHotkeyRegistered = false;
+                }
                 return;
             }
+
+            if (!RestoreHotkeyRegistered)
+                RestoreHotkeyRegistered = RegisterHotKey(Handle, RestoreHotkeyId, RestoreModifiers, (uint)Keys.T);
 
             if (mode == AutoModeType.Auto)
             {
@@ -122,6 +147,13 @@ namespace SmartTaskbar
 
         protected override void WndProc(ref Message message)
         {
+            if ((message.Msg == Hotkey && message.WParam == (IntPtr)RestoreHotkeyId) ||
+                (ShowTaskbarsMessage != 0 && message.Msg == ShowTaskbarsMessage))
+            {
+                ShowTaskbarsRequested?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+
             if (message.Msg == CloseWindow && CloseRequested is { } close)
             {
                 close(this, EventArgs.Empty);
@@ -149,29 +181,44 @@ namespace SmartTaskbar
             if (_shell != shell)
             {
                 _shell = shell;
-                ClearSeam();
+                ClearEdgeReveal();
                 _dismissBar = IntPtr.Zero;
                 _nextCommand = 0;
+                _autoHideEstablished = false;
             }
 
             if (_shell != IntPtr.Zero)
-                SetAutoHide(true);
-            var displays = Array.ConvertAll(Screen.AllScreens, screen => screen.Bounds);
-            TaskbarHelper.ReadTaskbars(_shell, displays, _bars);
-            _seams.Clear();
-            foreach (var bar in _bars)
             {
-                foreach (var display in displays)
+                if (IsAutoHide())
                 {
-                    var band = bar.SharedEdgeBand(display);
-                    if (band.Width > 0 && band.Height > 0)
-                        _seams.Add((bar, band));
+                    _autoHideEstablished = true;
+                }
+                else if (_autoHideEstablished)
+                {
+                    // Respect a user who disables auto-hide in Windows Settings.
+                    ShowTaskbarsRequested?.Invoke(this, EventArgs.Empty);
+                    return;
+                }
+                else
+                {
+                    SetAutoHide(true);
+                    _autoHideEstablished = IsAutoHide();
                 }
             }
 
-            _cursorSampler.Enabled = _seams.Count > 0;
-            if (!_cursorSampler.Enabled || (_seamReveal is { } reveal && !_bars.Contains(reveal)))
-                ClearSeam();
+            var displays = Array.ConvertAll(Screen.AllScreens, screen => screen.Bounds);
+            TaskbarHelper.ReadTaskbars(_shell, displays, _bars);
+            _edges.Clear();
+            foreach (var bar in _bars)
+            {
+                var band = bar.RevealBand();
+                if (band.Width > 0 && band.Height > 0)
+                    _edges.Add((bar, band));
+            }
+
+            _cursorSampler.Enabled = _autoHideEstablished && _edges.Count > 0;
+            if (!_cursorSampler.Enabled || (_edgeReveal is { } reveal && !_bars.Contains(reveal)))
+                ClearEdgeReveal();
 
             _topologyDirty = false;
             _nextRefresh = now + 2_500;
@@ -186,7 +233,7 @@ namespace SmartTaskbar
             if (_topologyDirty || now >= _nextRefresh)
                 RefreshTaskbars(now);
 
-            if (_mode != AutoModeType.Auto || _bars.Count == 0 || _seamReveal.HasValue || MenuOpen)
+            if (_mode != AutoModeType.Auto || !_autoHideEstablished || _bars.Count == 0 || _edgeReveal.HasValue || MenuOpen)
                 return;
 
             var foreground = GetForegroundWindow();
@@ -283,18 +330,21 @@ namespace SmartTaskbar
             return true;
         }
 
-        private void SampleSharedEdge()
+        private void SampleTaskbarEdges()
         {
-            var cursor = Cursor.Position;
+            if (MenuOpen || !GetCursorPos(out var point))
+                return;
+
+            var cursor = new Point(point.x, point.y);
             var now = Environment.TickCount64;
-            if (_seamReveal is { } active)
+            if (_edgeReveal is { } active)
             {
                 if (active.ShownBounds.Contains(cursor))
                 {
-                    if (!_seamConfirmed)
+                    if (!_edgeConfirmed)
                     {
-                        _seamConfirmed = TaskbarHelper.IsShown(active);
-                        if (!_seamConfirmed && _dwell.TryRequestReveal(now))
+                        _edgeConfirmed = CanUseTaskbar(active, cursor);
+                        if (!_edgeConfirmed && _dwell.TryRequestReveal(now))
                             TaskbarHelper.Reveal(_shell, active.Monitor);
                     }
 
@@ -304,15 +354,15 @@ namespace SmartTaskbar
                 if (_mode == AutoModeType.Dock)
                 {
                     _dismissBar = active.Handle;
-                    _dismissAfter = now + SeamDismissMs;
+                    _dismissAfter = now + EdgeDismissMs;
                 }
 
-                ClearSeam();
+                ClearEdgeReveal();
                 if (_mode == AutoModeType.Auto)
                     QueueUpdate();
             }
 
-            foreach (var (bar, band) in _seams)
+            foreach (var (bar, band) in _edges)
             {
                 if (!band.Contains(cursor))
                     continue;
@@ -320,11 +370,11 @@ namespace SmartTaskbar
                 if (!_dwell.IsReady(bar.Handle, now))
                     return;
 
-                var shown = TaskbarHelper.IsShown(bar);
+                var shown = CanUseTaskbar(bar, cursor);
                 if (shown || (_dwell.TryRequestReveal(now) && TaskbarHelper.Reveal(_shell, bar.Monitor)))
                 {
-                    _seamReveal = bar;
-                    _seamConfirmed = shown;
+                    _edgeReveal = bar;
+                    _edgeConfirmed = shown;
                     _dismissBar = IntPtr.Zero;
                     _nextCommand = now + CommandCooldownMs;
                 }
@@ -333,10 +383,13 @@ namespace SmartTaskbar
             }
 
             _dwell = default;
-            DismissSeamReveal(cursor, now);
+            DismissEdgeReveal(cursor, now);
         }
 
-        private void DismissSeamReveal(Point cursor, long now)
+        private static bool CanUseTaskbar(TaskbarInfo bar, Point cursor)
+            => TaskbarHelper.IsShown(bar) && WindowAt(cursor) == bar.Handle;
+
+        private void DismissEdgeReveal(Point cursor, long now)
         {
             if (_dismissBar == IntPtr.Zero || now < _dismissAfter || MenuOpen)
                 return;
@@ -344,7 +397,7 @@ namespace SmartTaskbar
             var hitClass = WindowAt(cursor).GetClassName();
             if (TaskbarHelper.IsTraySurface(hitClass) || TaskbarHelper.IsTraySurface(GetForegroundWindow().GetClassName()))
             {
-                _dismissAfter = now + SeamDismissMs;
+                _dismissAfter = now + EdgeDismissMs;
                 return;
             }
 
@@ -364,11 +417,11 @@ namespace SmartTaskbar
             _dismissBar = IntPtr.Zero;
         }
 
-        private void ClearSeam()
+        private void ClearEdgeReveal()
         {
             _dwell = default;
-            _seamReveal = null;
-            _seamConfirmed = false;
+            _edgeReveal = null;
+            _edgeConfirmed = false;
         }
 
         public async Task WaitForNativeHideOnExitAsync()
@@ -384,7 +437,7 @@ namespace SmartTaskbar
             // Toggling auto-hide off while a tray is still open can leave it stuck after the next toggle.
             var deadline = Environment.TickCount64 + 2_200;
             var hideRequests = 0;
-            var nextHide = Environment.TickCount64 + SeamDismissMs;
+            var nextHide = Environment.TickCount64 + EdgeDismissMs;
             while (Environment.TickCount64 < deadline && _bars.Exists(TaskbarHelper.IsBeyondAutoHideStrip))
             {
                 var cursor = Cursor.Position;
