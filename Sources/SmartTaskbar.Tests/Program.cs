@@ -16,6 +16,9 @@ var hiddenUpper = new Rectangle(-200, -2, 2560, 151);
 Expect(TaskbarInfo.Dock(hiddenUpper, upper, TaskbarPosition.Bottom) == upperBar.ShownBounds,
     "A hidden upper bar docks back inside the upper monitor");
 Expect(!upperBar.IsShown(hiddenUpper), "A two-pixel strip counts as hidden even over a second display");
+Expect(upperBar.VisibleThickness(hiddenUpper) == 2
+    && upperBar.VisibleThickness(new Rectangle(-200, -12, 2560, 151)) == 12,
+    "The exit wait can distinguish the hidden strip from a partly collapsed taskbar");
 Expect(upperBar.IsShown(upperBar.ShownBounds), "A fully docked bar counts as shown");
 Expect(!upperBar.IsShown(new Rectangle(2360, -151, 2560, 151)), "A bar on a different display is hidden here");
 
@@ -51,8 +54,14 @@ Expect(!dwell.IsReady(upperBar.Handle, 1400) && dwell.IsReady(upperBar.Handle, 1
     "Reentering the seam starts a new dwell");
 Expect(!dwell.IsReady(lowerBar.Handle, 1600) && dwell.IsReady(lowerBar.Handle, 1780),
     "Changing monitors restarts the dwell");
+Expect(dwell.TryRequestReveal(1780) && !dwell.TryRequestReveal(2179),
+    "An unconfirmed shell reveal gets time to animate before a retry");
+Expect(dwell.TryRequestReveal(2180) && !dwell.TryRequestReveal(3000),
+    "A stationary pointer can request at most two reveals");
+Expect(!dwell.IsReady(upperBar.Handle, 3010) && dwell.TryRequestReveal(3190),
+    "A new taskbar gets its own reveal attempts");
 
-Console.WriteLine("17 taskbar geometry and dwell checks passed.");
+Console.WriteLine("21 taskbar geometry and dwell checks passed.");
 
 static void Expect(bool condition, string message)
 {

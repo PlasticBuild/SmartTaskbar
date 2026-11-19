@@ -13,6 +13,7 @@ namespace SmartTaskbar
         private readonly NotifyIcon _notifyIcon;
         private readonly Font _font = new("Segoe UI", 10.5F);
         private readonly SynchronizationContext _uiContext;
+        private bool _closing;
         private bool _disposed;
 
         public SystemTray()
@@ -66,6 +67,7 @@ namespace SmartTaskbar
             auto.Click += (_, _) => ToggleMode(AutoModeType.Auto, auto.Checked);
             dock.Click += (_, _) => ToggleMode(AutoModeType.Dock, dock.Checked);
             exit.Click += (_, _) => ExitThread();
+            _engine.CloseRequested += (_, _) => ExitThread();
 
             _engine.SetMode(UserSettings.AutoModeType);
         }
@@ -96,6 +98,24 @@ namespace SmartTaskbar
             var shell = Fun.FindWindow(TaskbarHelper.PrimaryClass, null);
             if (shell != IntPtr.Zero && Fun.IsAutoHide())
                 TaskbarHelper.Hide(shell);
+        }
+
+        protected override async void ExitThreadCore()
+        {
+            if (_closing)
+                return;
+
+            _closing = true;
+            _menu.Close();
+            try
+            {
+                if (UserSettings.ShowTaskbarWhenExit)
+                    await _engine.WaitForNativeHideOnExitAsync();
+            }
+            finally
+            {
+                base.ExitThreadCore();
+            }
         }
 
         protected override void Dispose(bool disposing)

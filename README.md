@@ -19,6 +19,8 @@ SmartTaskbar  <img src="https://github.com/ChanpleCai/SmartTaskbar/blob/main/log
 
 Dock auto-hide is the default for new settings. Use the tray menu to switch modes, or double-click the tray icon to toggle the Windows auto-hide setting. For access on secondary displays, enable **Show my taskbar on all displays** in Windows Settings. Explorer controls which taskbar positions support native auto-hide.
 
+SmartTaskbar rediscovers the taskbars after Explorer restarts. When **Show taskbar on exit** is enabled, the app gives Explorer a short time to finish hiding an open bar before it restores the visible taskbars.
+
 The x64 portable build requires the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). Extract the ZIP and run `SmartTaskbar.exe`. Use **Exit** in the tray menu to close it.
 
 ```powershell

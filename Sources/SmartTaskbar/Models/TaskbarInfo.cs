@@ -6,14 +6,17 @@ namespace SmartTaskbar
         IntPtr Handle, IntPtr Monitor, Rectangle Display, Rectangle ShownBounds, TaskbarPosition Edge)
     {
         public bool IsShown(Rectangle actual)
+            => VisibleThickness(actual) >
+                (Edge is TaskbarPosition.Bottom or TaskbarPosition.Top ? ShownBounds.Height : ShownBounds.Width) / 2;
+
+        public int VisibleThickness(Rectangle actual)
         {
             var visible = Rectangle.Intersect(actual, Display);
             if (visible.Width <= 0 || visible.Height <= 0)
-                return false;
+                return 0;
 
             return Edge is TaskbarPosition.Bottom or TaskbarPosition.Top
-                ? visible.Height > ShownBounds.Height / 2
-                : visible.Width > ShownBounds.Width / 2;
+                ? visible.Height : visible.Width;
         }
 
         public Rectangle SharedEdgeBand(Rectangle otherDisplay)

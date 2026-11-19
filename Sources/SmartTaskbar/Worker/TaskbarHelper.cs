@@ -145,6 +145,9 @@ namespace SmartTaskbar
         public static bool IsShown(TaskbarInfo bar)
             => GetWindowRect(bar.Handle, out var actual) && bar.IsShown(actual.ToRectangle());
 
+        public static bool IsBeyondAutoHideStrip(TaskbarInfo bar)
+            => GetWindowRect(bar.Handle, out var actual) && bar.VisibleThickness(actual.ToRectangle()) > 4;
+
         // Explorer routes reveals through the primary taskbar, with the intended monitor as lParam.
         public static bool Reveal(IntPtr shell, IntPtr monitor)
             => PostMessage(shell, TrayAutoHideMessage, new IntPtr(1), monitor);
