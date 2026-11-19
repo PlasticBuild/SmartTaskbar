@@ -15,7 +15,8 @@ namespace SmartTaskbar
 
                 ApplicationConfiguration.Initialize();
                 // Start a tray instead of a WinForm to reduce memory usage
-                Application.Run(new SystemTray());
+                using var tray = new SystemTray();
+                Application.Run(tray);
             }
         }
     }

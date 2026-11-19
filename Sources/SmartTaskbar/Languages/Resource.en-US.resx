@@ -124,7 +124,10 @@
     <value>Animations in the taskbar</value>
   </data>
   <data name="tray_auto" xml:space="preserve">
-    <value>Auto Mode</value>
+    <value>Hide on window overlap</value>
+  </data>
+  <data name="tray_dock" xml:space="preserve">
+    <value>Dock auto-hide</value>
   </data>
   <data name="tray_exit" xml:space="preserve">
     <value>Exit</value>

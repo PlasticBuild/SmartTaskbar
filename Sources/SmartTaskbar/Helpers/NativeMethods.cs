@@ -4,6 +4,34 @@ namespace SmartTaskbar
 {
     public static partial class Fun
     {
+        internal delegate void WinEventCallback(IntPtr hook, uint eventType, IntPtr hwnd,
+            int idObject, int idChild, uint threadId, uint time);
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module,
+            WinEventCallback callback, uint processId, uint threadId, uint flags);
+
+        [DllImport("user32.dll")]
+        internal static extern bool UnhookWinEvent(IntPtr hook);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        internal static extern uint RegisterWindowMessage(string name);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        internal static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string? title);
+
+        [DllImport("user32.dll")]
+        internal static extern bool IsIconic(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        internal static extern bool IsZoomed(IntPtr hwnd);
+
+        [DllImport("dwmapi.dll")]
+        internal static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out TagRect rect, int size);
+
+        [DllImport("kernel32.dll")]
+        internal static extern int GetCurrentPackageFamilyName(ref uint length, IntPtr name);
+
         #region PostMessage
 
         /// <summary>

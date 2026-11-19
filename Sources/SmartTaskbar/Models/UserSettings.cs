@@ -1,52 +1,63 @@
-﻿using Windows.Storage;
+using Microsoft.Win32;
+using Windows.Storage;
 
 namespace SmartTaskbar
 {
-    public class UserSettings
+    public static class UserSettings
     {
-        private static UserConfiguration _userConfiguration;
+        private const int BufferRequired = 122;
+        private const string StandaloneSettings = @"Software\SmartTaskbar\Desktop";
+        private static readonly ApplicationDataContainer? PackageSettings = GetPackageSettings();
 
-        /// <summary>
-        ///     ctor
-        /// </summary>
-        static UserSettings()
+        private static ApplicationDataContainer? GetPackageSettings()
         {
-            var autoMode =
-                ApplicationData.Current.LocalSettings.Values[nameof(UserConfiguration.AutoModeType)] as string;
-
-            _userConfiguration = new UserConfiguration
-            {
-                AutoModeType = autoMode == nameof(AutoModeType.None) ? AutoModeType.None : AutoModeType.Auto,
-                ShowTaskbarWhenExit =
-                    ApplicationData.Current.LocalSettings.Values[nameof(UserConfiguration.ShowTaskbarWhenExit)] as bool?
-                    ?? true
-            };
+            uint length = 0;
+            return Fun.GetCurrentPackageFamilyName(ref length, IntPtr.Zero) == BufferRequired
+                ? ApplicationData.Current.LocalSettings
+                : null;
         }
 
         public static AutoModeType AutoModeType
         {
-            get => _userConfiguration.AutoModeType;
-            set
+            get => (Read(nameof(AutoModeType)) as string) switch
             {
-                if (value == _userConfiguration.AutoModeType)
-                    return;
-
-                _userConfiguration.AutoModeType = value;
-                ApplicationData.Current.LocalSettings.Values[nameof(UserConfiguration.AutoModeType)] = value.ToString();
-            }
+                nameof(AutoModeType.None) => AutoModeType.None,
+                nameof(AutoModeType.Auto) => AutoModeType.Auto,
+                _ => AutoModeType.Dock
+            };
+            set => Write(nameof(AutoModeType), value.ToString());
         }
 
         public static bool ShowTaskbarWhenExit
         {
-            get => _userConfiguration.ShowTaskbarWhenExit;
-            set
+            get => Read(nameof(ShowTaskbarWhenExit)) switch
             {
-                if (value == _userConfiguration.ShowTaskbarWhenExit)
-                    return;
+                bool value => value,
+                int value => value != 0,
+                _ => true
+            };
+            set => Write(nameof(ShowTaskbarWhenExit), value);
+        }
 
-                _userConfiguration.ShowTaskbarWhenExit = value;
-                ApplicationData.Current.LocalSettings.Values[nameof(UserConfiguration.ShowTaskbarWhenExit)] = value;
+        private static object? Read(string name)
+        {
+            if (PackageSettings != null)
+                return PackageSettings.Values.TryGetValue(name, out var value) ? value : null;
+
+            using var key = Registry.CurrentUser.OpenSubKey(StandaloneSettings);
+            return key?.GetValue(name);
+        }
+
+        private static void Write(string name, object value)
+        {
+            if (PackageSettings != null)
+            {
+                PackageSettings.Values[name] = value;
+                return;
             }
+
+            using var key = Registry.CurrentUser.CreateSubKey(StandaloneSettings);
+            key.SetValue(name, value is bool flag ? (flag ? 1 : 0) : value);
         }
     }
 }

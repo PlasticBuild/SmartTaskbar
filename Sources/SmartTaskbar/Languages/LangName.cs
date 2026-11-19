@@ -8,6 +8,8 @@
 
         public const string Auto = "tray_auto";
 
+        public const string Dock = "tray_dock";
+
         public const string Exit = "tray_exit";
 
         public const string ShowBarOnExit = "tray_showBarOnExit";

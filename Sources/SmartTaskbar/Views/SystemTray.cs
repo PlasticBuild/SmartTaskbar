@@ -1,222 +1,119 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Diagnostics;
-using Windows.System;
 using Windows.UI.ViewManagement;
 using SmartTaskbar.Languages;
 
 namespace SmartTaskbar
 {
-    internal class SystemTray : ApplicationContext
+    internal sealed class SystemTray : ApplicationContext
     {
-        private const int TrayTolerance = 4;
-        private readonly ToolStripMenuItem _animationInBar;
-        private readonly ToolStripMenuItem _autoMode;
-
         private readonly Container _container = new();
-        private readonly ContextMenuStrip _contextMenuStrip;
-
-        private readonly Engine _engine;
-        private readonly ToolStripMenuItem _exit;
+        private readonly Engine _engine = new();
+        private readonly ContextMenuStrip _menu;
         private readonly NotifyIcon _notifyIcon;
-        private readonly ResourceCulture _resourceCulture = new();
-        private readonly ToolStripMenuItem _showBarOnExit;
+        private readonly Font _font = new("Segoe UI", 10.5F);
+        private readonly SynchronizationContext _uiContext;
+        private bool _disposed;
 
         public SystemTray()
         {
-            #region Initialization
+            var resources = new ResourceCulture();
+            var about = new ToolStripMenuItem(resources.GetString(LangName.About)) { Font = _font };
+            var animation = new ToolStripMenuItem(resources.GetString(LangName.Animation)) { Font = _font };
+            var auto = new ToolStripMenuItem(resources.GetString(LangName.Auto)) { Font = _font };
+            var dock = new ToolStripMenuItem(resources.GetString(LangName.Dock)) { Font = _font };
+            var showOnExit = new ToolStripMenuItem(resources.GetString(LangName.ShowBarOnExit)) { Font = _font };
+            var exit = new ToolStripMenuItem(resources.GetString(LangName.Exit)) { Font = _font };
 
-            _engine = new Engine(_container);
-
-            var font = new Font("Segoe UI", 10.5F);
-
-            var about = new ToolStripMenuItem(_resourceCulture.GetString(LangName.About))
-            {
-                Font = font
-            };
-            _animationInBar = new ToolStripMenuItem(_resourceCulture.GetString(LangName.Animation))
-            {
-                Font = font
-            };
-            _showBarOnExit = new ToolStripMenuItem(_resourceCulture.GetString(LangName.ShowBarOnExit))
-            {
-                Font = font
-            };
-            _autoMode = new ToolStripMenuItem(_resourceCulture.GetString(LangName.Auto))
-            {
-                Font = font
-            };
-            _exit = new ToolStripMenuItem(_resourceCulture.GetString(LangName.Exit))
-            {
-                Font = font
-            };
-
-            _contextMenuStrip = new ContextMenuStrip(_container)
-            {
-                Renderer = new Win11Renderer()
-            };
-
-            _contextMenuStrip.Items.AddRange(new ToolStripItem[]
-            {
-                about,
-                _animationInBar,
-                new ToolStripSeparator(),
-                _autoMode,
-                new ToolStripSeparator(),
-                _showBarOnExit,
-                _exit
-            });
+            _menu = new ContextMenuStrip(_container) { Renderer = new Win11Renderer() };
+            _menu.Items.AddRange([about, animation, new ToolStripSeparator(), dock, auto,
+                new ToolStripSeparator(), showOnExit, exit]);
 
             _notifyIcon = new NotifyIcon(_container)
             {
                 Text = Application.ProductName,
-                Icon = Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White,
+                Icon = GetIcon(),
+                ContextMenuStrip = _menu,
                 Visible = true
             };
 
-            #endregion
+            _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+            Fun.UiSettings.ColorValuesChanged += OnColorChanged;
 
-            #region Load Event
-
-            about.Click += AboutOnClick;
-
-            _animationInBar.Click += AnimationInBarOnClick;
-
-            _showBarOnExit.Click += ShowBarOnExitOnClick;
-
-            _autoMode.Click += AutoModeOnClick;
-
-            _exit.Click += ExitOnClick;
-
-            _notifyIcon.MouseClick += NotifyIconOnMouseClick;
-
-            _notifyIcon.MouseDoubleClick += NotifyIconOnMouseDoubleClick;
-
-            Fun.UiSettings.ColorValuesChanged += UISettingsOnColorValuesChanged;
-
-            Application.ApplicationExit += Application_ApplicationExit;
-
-            #endregion
-        }
-
-        private void AboutOnClick(object? sender, EventArgs e)
-            => _ = Launcher.LaunchUriAsync(new Uri("https://github.com/ChanpleCai/SmartTaskbar"));
-
-        private void UISettingsOnColorValuesChanged(UISettings s, object e)
-            => _notifyIcon.Icon = Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White;
-
-        private void NotifyIconOnMouseDoubleClick(object? s, MouseEventArgs e)
-        {
-            UserSettings.AutoModeType = AutoModeType.None;
-
-            Fun.ChangeAutoHide();
-            HideBar();
-        }
-
-        private void NotifyIconOnMouseClick(object? s, MouseEventArgs e)
-        {
-            if (e.Button != MouseButtons.Right) return;
-
-            _animationInBar.Checked = Fun.IsEnableTaskbarAnimation();
-            _showBarOnExit.Checked = UserSettings.ShowTaskbarWhenExit;
-            _autoMode.Checked = UserSettings.AutoModeType == AutoModeType.Auto;
-
-            ShowMenu();
-
-            Fun.SetForegroundWindow(_contextMenuStrip.Handle);
-        }
-
-        private void ShowMenu()
-        {
-            var taskbar = TaskbarHelper.InitTaskbar();
-
-            if (taskbar.Handle == IntPtr.Zero)
-                return;
-
-            switch (taskbar.Position)
+            _menu.Opening += (_, _) =>
             {
-                case TaskbarPosition.Bottom:
-                    if (Cursor.Position.X + _contextMenuStrip.Width > Screen.PrimaryScreen.Bounds.Right)
-                        _contextMenuStrip.Show(
-                            Screen.PrimaryScreen.Bounds.Right - _contextMenuStrip.Width - TrayTolerance,
-                            taskbar.Rect.top - _contextMenuStrip.Height - TrayTolerance);
-                    else
-                        _contextMenuStrip.Show(Cursor.Position.X - TrayTolerance,
-                                               taskbar.Rect.top - _contextMenuStrip.Height - TrayTolerance);
-                    break;
-                case TaskbarPosition.Left:
-                    if (Cursor.Position.Y + _contextMenuStrip.Height > Screen.PrimaryScreen.Bounds.Bottom)
-                        _contextMenuStrip.Show(taskbar.Rect.right + TrayTolerance,
-                                               Screen.PrimaryScreen.Bounds.Bottom
-                                               - _contextMenuStrip.Height
-                                               - TrayTolerance);
-                    else
-                        _contextMenuStrip.Show(taskbar.Rect.right + TrayTolerance,
-                                               Cursor.Position.Y - TrayTolerance);
-                    break;
-                case TaskbarPosition.Right:
-                    if (Cursor.Position.Y + _contextMenuStrip.Height > Screen.PrimaryScreen.Bounds.Bottom)
-                        _contextMenuStrip.Show(taskbar.Rect.left - TrayTolerance - _contextMenuStrip.Width,
-                                               Screen.PrimaryScreen.Bounds.Bottom
-                                               - _contextMenuStrip.Height
-                                               - TrayTolerance);
-                    else
-                        _contextMenuStrip.Show(taskbar.Rect.left - TrayTolerance - _contextMenuStrip.Width,
-                                               Cursor.Position.Y - TrayTolerance);
-                    break;
-                case TaskbarPosition.Top:
-                    if (Cursor.Position.X + _contextMenuStrip.Width > Screen.PrimaryScreen.Bounds.Right)
-                        _contextMenuStrip.Show(
-                            Screen.PrimaryScreen.Bounds.Right - _contextMenuStrip.Width - TrayTolerance,
-                            taskbar.Rect.bottom + TrayTolerance);
-                    else
-                        _contextMenuStrip.Show(Cursor.Position.X - TrayTolerance,
-                                               taskbar.Rect.bottom + TrayTolerance);
-                    break;
-            }
-        }
-
-        private static void HideBar()
-        {
-            if (Fun.IsNotAutoHide())
-                return;
-
-            var taskbar = TaskbarHelper.InitTaskbar();
-
-            if (taskbar.Handle != IntPtr.Zero)
-                taskbar.HideTaskbar();
-        }
-
-        private void ExitOnClick(object? s, EventArgs e)
-        {
-            if (UserSettings.ShowTaskbarWhenExit)
-                Fun.CancelAutoHide();
-            else
-                HideBar();
-            _container?.Dispose();
-            Application.Exit();
-        }
-
-        private void ShowBarOnExitOnClick(object? s, EventArgs e)
-            => UserSettings.ShowTaskbarWhenExit = !_showBarOnExit.Checked;
-
-        private void AutoModeOnClick(object? s, EventArgs e)
-        {
-            if (_autoMode.Checked)
+                animation.Checked = Fun.IsEnableTaskbarAnimation();
+                var mode = UserSettings.AutoModeType;
+                auto.Checked = mode == AutoModeType.Auto;
+                dock.Checked = mode == AutoModeType.Dock;
+                showOnExit.Checked = UserSettings.ShowTaskbarWhenExit;
+            };
+            _menu.Opened += (_, _) => _engine.MenuOpen = true;
+            _menu.Closed += (_, _) => _engine.MenuOpen = false;
+            _notifyIcon.MouseDoubleClick += (_, args) =>
             {
-                UserSettings.AutoModeType = AutoModeType.None;
-                HideBar();
-            }
-            else { UserSettings.AutoModeType = AutoModeType.Auto; }
+                if (args.Button != MouseButtons.Left)
+                    return;
+
+                ChangeMode(AutoModeType.None);
+                Fun.SetAutoHide(!Fun.IsAutoHide());
+                HideAutoHiddenBar();
+            };
+            about.Click += (_, _) => Process.Start(new ProcessStartInfo("https://github.com/Oliviaophia/SmartTaskbar")
+                { UseShellExecute = true });
+            animation.Click += (_, _) => animation.Checked = Fun.ChangeTaskbarAnimation();
+            showOnExit.Click += (_, _) => UserSettings.ShowTaskbarWhenExit = !showOnExit.Checked;
+            auto.Click += (_, _) => ToggleMode(AutoModeType.Auto, auto.Checked);
+            dock.Click += (_, _) => ToggleMode(AutoModeType.Dock, dock.Checked);
+            exit.Click += (_, _) => ExitThread();
+
+            _engine.SetMode(UserSettings.AutoModeType);
         }
 
-        private void AnimationInBarOnClick(object? s, EventArgs e)
-            => _animationInBar.Checked = Fun.ChangeTaskbarAnimation();
-
-        private static async void Application_ApplicationExit(object? sender, EventArgs e)
+        private void ToggleMode(AutoModeType mode, bool isChecked)
         {
-            // Weird bug.
-            await Task.Delay(500);
-            Process.GetCurrentProcess().Kill();
+            ChangeMode(isChecked ? AutoModeType.None : mode);
+            HideAutoHiddenBar();
+        }
+
+        private void ChangeMode(AutoModeType mode)
+        {
+            UserSettings.AutoModeType = mode;
+            _engine.SetMode(mode);
+        }
+
+        private static Icon GetIcon() => Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White;
+
+        private void OnColorChanged(UISettings sender, object args)
+            => _uiContext.Post(_ =>
+            {
+                if (!_disposed)
+                    _notifyIcon.Icon = GetIcon();
+            }, null);
+
+        private static void HideAutoHiddenBar()
+        {
+            var shell = Fun.FindWindow(TaskbarHelper.PrimaryClass, null);
+            if (shell != IntPtr.Zero && Fun.IsAutoHide())
+                TaskbarHelper.Hide(shell);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !_disposed)
+            {
+                _disposed = true;
+                Fun.UiSettings.ColorValuesChanged -= OnColorChanged;
+                _engine.Dispose();
+                if (UserSettings.ShowTaskbarWhenExit)
+                    Fun.SetAutoHide(false);
+                else
+                    HideAutoHiddenBar();
+                _container.Dispose();
+                _font.Dispose();
+            }
+
+            base.Dispose(disposing);
         }
     }
 }

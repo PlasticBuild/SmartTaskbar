@@ -1,52 +1,31 @@
-﻿namespace SmartTaskbar
+using System.Runtime.InteropServices;
+
+namespace SmartTaskbar
 {
     public static partial class Fun
     {
-        private const int TrayAbsAutoHide = 1;
+        private const int AutoHide = 1;
+        private const uint GetState = 4;
+        private const uint SetState = 10;
 
-        private const int TrayAbsAlwaysOnTop = 2;
+        internal static AppbarData AppBar(IntPtr shell = default)
+            => new() { cbSize = (uint)Marshal.SizeOf<AppbarData>(), hWnd = shell };
 
-        private const uint TrayAbmSetState = 10;
-
-        private const uint TrayAbmGetState = 4;
-        private static AppbarData _msg;
-
-        /// <summary>
-        ///     Set taskbar to Auto-Hide
-        /// </summary>
-        public static void SetAutoHide()
+        public static bool IsAutoHide()
         {
-            if (!IsNotAutoHide())
-                return;
-
-            _msg.lParam = TrayAbsAutoHide;
-
-            _ = SHAppBarMessage(TrayAbmSetState, ref _msg);
+            var data = AppBar();
+            return (SHAppBarMessage(GetState, ref data).ToInt64() & AutoHide) != 0;
         }
 
-        public static bool IsNotAutoHide()
-            => SHAppBarMessage(TrayAbmGetState, ref _msg) == IntPtr.Zero;
-
-        /// <summary>
-        ///     Change Auto-Hide status
-        /// </summary>
-        public static void ChangeAutoHide()
+        public static void SetAutoHide(bool enabled)
         {
-            _msg.lParam = IsNotAutoHide() ? TrayAbsAutoHide : TrayAbsAlwaysOnTop;
-            _ = SHAppBarMessage(TrayAbmSetState, ref _msg);
-        }
-
-        /// <summary>
-        ///     Set taskbar to Always-On-Top
-        /// </summary>
-        public static void CancelAutoHide()
-        {
-            if (IsNotAutoHide())
+            var shell = FindWindow(TaskbarHelper.PrimaryClass, null);
+            if (shell == IntPtr.Zero || enabled == IsAutoHide())
                 return;
 
-            _msg.lParam = TrayAbsAlwaysOnTop;
-
-            _ = SHAppBarMessage(TrayAbmSetState, ref _msg);
+            var data = AppBar(shell);
+            data.lParam = (IntPtr)(enabled ? AutoHide : 2);
+            SHAppBarMessage(SetState, ref data);
         }
     }
 }

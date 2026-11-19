@@ -3,7 +3,7 @@
 namespace SmartTaskbar
 {
     [StructLayout(LayoutKind.Sequential)]
-    public struct TagRect
+    public struct TagRect : IEquatable<TagRect>
     {
         public int left;
 
@@ -12,6 +12,11 @@ namespace SmartTaskbar
         public int right;
 
         public int bottom;
+
+        public readonly Rectangle ToRectangle() => Rectangle.FromLTRB(left, top, right, bottom);
+
+        public static TagRect FromRectangle(Rectangle bounds)
+            => new() { left = bounds.Left, top = bounds.Top, right = bounds.Right, bottom = bounds.Bottom };
 
         public static bool operator ==(TagRect left, TagRect right)
             => left.left == right.left
@@ -28,7 +33,7 @@ namespace SmartTaskbar
                && right == other.right
                && bottom == other.bottom;
 
-        public override bool Equals(object obj)
+        public override bool Equals(object? obj)
             => obj is TagRect other && Equals(other);
 
         public override int GetHashCode()

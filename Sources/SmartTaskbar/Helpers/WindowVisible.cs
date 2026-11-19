@@ -6,10 +6,12 @@
 
         public static bool IsWindowInvisible(this IntPtr handle)
         {
-            if (IsWindowVisible(handle) == false) return true;
+            if (!IsWindowVisible(handle) || IsIconic(handle)) return true;
 
-            _ = DwmGetWindowAttribute(handle, TrayDwmWaCloaked, out var cloaked, sizeof(int));
-            return cloaked;
+            return DwmGetWindowAttribute(handle, TrayDwmWaCloaked, out bool cloaked, sizeof(int)) == 0 && cloaked;
         }
+
+        internal static bool TryGetVisibleBounds(IntPtr handle, out TagRect rect)
+            => DwmGetWindowAttribute(handle, 9, out rect, sizeof(int) * 4) == 0 || GetWindowRect(handle, out rect);
     }
 }

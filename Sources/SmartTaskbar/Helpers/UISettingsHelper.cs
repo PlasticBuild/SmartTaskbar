@@ -15,10 +15,9 @@ namespace SmartTaskbar
         public static bool IsLightTheme()
         {
             using var personalizeKey =
-                Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", false)
-                ?? throw new InvalidOperationException("OpenSubKey Personalize Failed.");
+                Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", false);
 
-            return (int) (personalizeKey.GetValue("SystemUsesLightTheme", 0) ?? 0) == 1;
+            return personalizeKey?.GetValue("SystemUsesLightTheme") is 1;
         }
     }
 }

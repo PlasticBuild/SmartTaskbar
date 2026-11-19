@@ -15,6 +15,6 @@ namespace SmartTaskbar
 
         public TagRect rc;
 
-        public int lParam;
+        public IntPtr lParam;
     }
 }

@@ -1,48 +1,73 @@
-﻿namespace SmartTaskbar
-{
-    /// <summary>
-    ///     Taskbar information structure
-    /// </summary>
-    public readonly struct TaskbarInfo
-    {
-        public static readonly TaskbarInfo Empty = new();
+using System.Drawing;
 
-        /// <summary>
-        ///     Initialize taskbar information
-        /// </summary>
-        /// <returns></returns>
-        public TaskbarInfo(IntPtr handle, TagRect rect, bool isShow, TaskbarPosition position, IntPtr monitor)
+namespace SmartTaskbar
+{
+    internal readonly record struct TaskbarInfo(
+        IntPtr Handle, IntPtr Monitor, Rectangle Display, Rectangle ShownBounds, TaskbarPosition Edge)
+    {
+        public bool IsShown(Rectangle actual)
         {
-            Handle = handle;
-            Rect = rect;
-            IsShow = isShow;
-            Position = position;
-            Monitor = monitor;
+            var visible = Rectangle.Intersect(actual, Display);
+            if (visible.Width <= 0 || visible.Height <= 0)
+                return false;
+
+            return Edge is TaskbarPosition.Bottom or TaskbarPosition.Top
+                ? visible.Height > ShownBounds.Height / 2
+                : visible.Width > ShownBounds.Width / 2;
         }
 
-        /// <summary>
-        ///     Taskbar handle
-        /// </summary>
-        public readonly IntPtr Handle;
+        public Rectangle SharedEdgeBand(Rectangle otherDisplay)
+        {
+            var horizontal = Edge is TaskbarPosition.Bottom or TaskbarPosition.Top;
+            var thickness = Math.Clamp((horizontal ? ShownBounds.Height : ShownBounds.Width) / 8, 4, 16);
+            Rectangle band;
+            switch (Edge)
+            {
+                case TaskbarPosition.Bottom when Display.Bottom == otherDisplay.Top:
+                    band = Rectangle.FromLTRB(otherDisplay.Left, Display.Bottom - thickness,
+                        otherDisplay.Right, Display.Bottom);
+                    break;
+                case TaskbarPosition.Top when Display.Top == otherDisplay.Bottom:
+                    band = Rectangle.FromLTRB(otherDisplay.Left, Display.Top,
+                        otherDisplay.Right, Display.Top + thickness);
+                    break;
+                case TaskbarPosition.Left when Display.Left == otherDisplay.Right:
+                    band = Rectangle.FromLTRB(Display.Left, otherDisplay.Top,
+                        Display.Left + thickness, otherDisplay.Bottom);
+                    break;
+                case TaskbarPosition.Right when Display.Right == otherDisplay.Left:
+                    band = Rectangle.FromLTRB(Display.Right - thickness, otherDisplay.Top,
+                        Display.Right, otherDisplay.Bottom);
+                    break;
+                default:
+                    return Rectangle.Empty;
+            }
 
-        /// <summary>
-        ///     Taskbar rectangle (in display state)
-        /// </summary>
-        public readonly TagRect Rect;
+            return Rectangle.Intersect(band, ShownBounds);
+        }
 
-        /// <summary>
-        ///     Whether the taskbar is displayed
-        /// </summary>
-        public readonly bool IsShow;
+        public bool IsCoveredBy(Rectangle window, IntPtr windowMonitor, bool maximized)
+            => (!maximized || windowMonitor == Monitor) && ShownBounds.IntersectsWith(window);
 
-        /// <summary>
-        ///     Taskbar Position
-        /// </summary>
-        public readonly TaskbarPosition Position;
+        public static Rectangle Dock(Rectangle actual, Rectangle display, TaskbarPosition edge)
+        {
+            switch (edge)
+            {
+                case TaskbarPosition.Bottom:
+                    actual.Y = display.Bottom - actual.Height;
+                    break;
+                case TaskbarPosition.Top:
+                    actual.Y = display.Top;
+                    break;
+                case TaskbarPosition.Left:
+                    actual.X = display.Left;
+                    break;
+                case TaskbarPosition.Right:
+                    actual.X = display.Right - actual.Width;
+                    break;
+            }
 
-        /// <summary>
-        ///     Taskbar Monitor
-        /// </summary>
-        public readonly IntPtr Monitor;
+            return Rectangle.Intersect(actual, display);
+        }
     }
 }

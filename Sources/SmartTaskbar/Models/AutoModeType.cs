@@ -13,6 +13,8 @@
         /// <summary>
         ///     Auto
         /// </summary>
-        Auto
+        Auto,
+
+        Dock
     }
 }

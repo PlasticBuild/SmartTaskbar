@@ -11,8 +11,22 @@ SmartTaskbar  <img src="https://github.com/ChanpleCai/SmartTaskbar/blob/main/log
 
 * SmartTaskbar is a lightweight utility which can automatically switch the display state of the Windows Taskbar.
 
-Features
------
+## Windows desktop preview
+
+**Dock auto-hide** keeps the Windows taskbar hidden until you move the pointer to its edge. When two displays share that edge, pause briefly just inside the display whose taskbar you want. Crossing to the other display without pausing leaves SmartTaskbar's reveal inactive. The outer screen edges use Explorer's native auto-hide.
+
+**Hide on window overlap** is the original SmartTaskbar mode. It uses the foreground window to decide whether the taskbar should be shown and checks each taskbar against its own display.
+
+Dock auto-hide is the default for new settings. Use the tray menu to switch modes, or double-click the tray icon to toggle the Windows auto-hide setting. For access on secondary displays, enable **Show my taskbar on all displays** in Windows Settings. Explorer controls which taskbar positions support native auto-hide.
+
+The x64 portable build requires the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). Extract the ZIP and run `SmartTaskbar.exe`. Use **Exit** in the tray menu to close it.
+
+```powershell
+dotnet publish Sources/SmartTaskbar/SmartTaskbar.csproj -c Release -r win-x64 --self-contained false
+dotnet run --project Sources/SmartTaskbar.Tests/SmartTaskbar.Tests.csproj -c Release
+```
+
+## Earlier releases
 
 #### Auto Mode
 
