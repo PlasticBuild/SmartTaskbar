@@ -310,6 +310,7 @@ pub(super) struct Geometry {
     pub activation: Box2,
     pub icons: Vec<Box2>,
     pub menu_box: Box2,
+    pub media: Option<Box2>,
 }
 pub(super) fn geometry(s: &State) -> Geometry {
     arrange(
@@ -378,11 +379,23 @@ fn arrange(scene: Box2, draft: &Settings, pins: usize, shown: f32, opened: f32) 
         .collect();
     let band = activation_band(native, Some(resting), draft.zone, dpi);
     let to_box = |r: Rect| Box2::at(r.left, r.top, r.width(), r.height());
+    let media = if draft.media_player && shown >= 0.99 && opened == 0.0 {
+        crate::media::placement(
+            native,
+            draft.island.then_some(resting),
+            draft.media_side,
+            dpi,
+        )
+        .map(|p| to_box(p.bounds))
+    } else {
+        None
+    };
     Geometry {
         bar,
         icons,
         activation: to_box(band),
         menu_box: to_box(menu),
+        media,
     }
 }
 
@@ -681,6 +694,31 @@ unsafe fn draw_scene(c: &Canvas, s: &State) {
             }
             c.round(Box2::at(tx + 16, ty - 2, 12, 7), 2, glass, p.text);
             c.fill(Box2::at(tx + 18, ty, 7, 3), p.text);
+            if let Some(player) = g.media {
+                c.round(player, (s.draft.radius as i32).max(3), glass, p.line);
+                let thumbnail = (player.h - 4).min(18);
+                let art = Box2::at(player.x + 3, player.y + 2, thumbnail, thumbnail);
+                c.round(art, 2, mix(glass, p.accent, 0.25), p.line);
+                c.text(
+                    Box2::at(art.x + 2, art.y, art.w, art.h),
+                    "♪",
+                    s.paint.normal,
+                    p.text,
+                );
+                let start = art.x + art.w + 4;
+                let width = player.x + player.w - start - 4;
+                c.text(
+                    Box2::at(start, player.y, width, player.h - 3),
+                    "‹  ▶  ›",
+                    s.paint.normal,
+                    p.text,
+                );
+                c.fill(Box2::at(start, player.y + player.h - 3, width, 1), p.line);
+                c.fill(
+                    Box2::at(start, player.y + player.h - 3, width / 2, 1),
+                    p.accent,
+                );
+            }
         } else if s.demo.full {
             c.fill(
                 Box2::at(

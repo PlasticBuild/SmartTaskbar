@@ -5,6 +5,7 @@ mod rescue;
 
 use crate::{
     join::Join,
+    media::{self, Widget, Worker},
     policy::{self, Edge, HoverState, Rect, Slide},
     settings::Settings,
 };
@@ -223,6 +224,7 @@ struct Managed {
     context: Option<usize>,
     last_face: Option<u64>,
     join: Join,
+    media: Widget,
 }
 impl Managed {
     fn attach(bar: Bar, guard: &mut rescue::Monitor) -> Result<Option<Self>, String> {
@@ -259,6 +261,7 @@ impl Managed {
             context: None,
             last_face: None,
             join: Join::default(),
+            media: Widget::default(),
         }))
     }
     fn thickness(bar: Bar) -> i32 {
@@ -332,6 +335,7 @@ struct Model {
     displays: Vec<Rect>,
     scene: Scene,
     names: native::ProcessNames,
+    media: Option<Worker>,
 }
 impl Model {
     fn sync(&mut self, guard: &mut rescue::Monitor) -> Result<(), String> {
@@ -372,6 +376,14 @@ impl Model {
     fn update(&mut self, settings: &Settings, now: u64) -> Result<u32, String> {
         let cursor = native::cursor();
         let mut delay = 1200;
+        if settings.media_player && !self.managed.is_empty() {
+            if self.media.is_none() {
+                self.media = Worker::start();
+            }
+        } else {
+            self.media = None;
+        }
+        let track = self.media.as_ref().and_then(Worker::snapshot);
         for m in self.managed.values_mut() {
             let bar = m.snap.bar.strip;
             let face = if settings.island {
@@ -401,6 +413,7 @@ impl Model {
                     .is_some_and(|last| now.saturating_sub(last) <= 400),
             );
             let menu = shell_menu || m.context.is_some();
+            let media_hold = track.is_some() && cursor.is_some_and(|p| m.media.holds(p));
             let surface = policy::BarInput {
                 bar,
                 island: face,
@@ -412,8 +425,14 @@ impl Model {
             });
             // The lock screen or a secure input desktop can deny GetCursorPos. Release the bar.
             let visible = pointer.is_none_or(|p| {
-                m.hover
-                    .update(surface, settings.zone, &self.displays, p, covered, menu)
+                m.hover.update(
+                    surface,
+                    settings.zone,
+                    &self.displays,
+                    p,
+                    covered,
+                    menu || media_hold,
+                )
             });
             let animating = m.draw(
                 settings,
@@ -432,7 +451,23 @@ impl Model {
                 m.join.clear();
                 false
             };
-            if animating || bridge {
+            let media_frame = if let Some(worker) = &self.media
+                && visible
+                && cursor.is_some()
+                && !menu
+                && m.depth == Managed::thickness(m.snap.bar)
+                && let Some(place) = media::placement(bar, face, settings.media_side, surface.dpi)
+            {
+                if track.is_some() {
+                    delay = delay.min(500);
+                }
+                m.media
+                    .update(place, (worker, track.clone()), surface.dpi, settings, now)
+            } else {
+                m.media.clear(now);
+                false
+            };
+            if animating || bridge || media_frame {
                 delay = 16
             } else if covered {
                 delay = delay.min(32)

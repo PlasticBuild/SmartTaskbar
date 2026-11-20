@@ -1,4 +1,4 @@
-use crate::settings::{Alignment, PROVIDERS, Settings, Zone};
+use crate::settings::{Alignment, MediaSide, PROVIDERS, Settings, Zone};
 use std::{
     mem,
     path::{Path, PathBuf},
@@ -39,6 +39,8 @@ const FULLSCREEN: u16 = 112;
 const MENU: u16 = 113;
 const APPLY: u16 = 114;
 const ENGINE: u16 = 115;
+const MEDIA: u16 = 116;
+const MEDIA_SIDE: u16 = 117;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
 const LABEL: u16 = 1000;
@@ -51,6 +53,7 @@ const LABELS: &[(u16, &str)] = &[
     (PRESS, "Click &depth"),
     (ZONE, "Activation &zone"),
     (PROVIDER, "Search pro&vider"),
+    (MEDIA_SIDE, "Media player &side"),
 ];
 
 fn wide(s: &str) -> Vec<u16> {
@@ -90,13 +93,13 @@ impl Page {
             let left = usable - right - 20;
             (
                 Box2::at(inset, 65, left, (height - 145).clamp(360, 610)),
-                Box2::at(inset + left + 20, 65, right, 512),
+                Box2::at(inset + left + 20, 65, right, 586),
             )
         } else {
             let h = (usable * 53 / 100).clamp(215, 340);
             (
                 Box2::at(inset, 65, usable, h),
-                Box2::at(inset, 65 + h + 14, usable, 512),
+                Box2::at(inset, 65 + h + 14, usable, 586),
             )
         };
         Self {
@@ -123,6 +126,8 @@ impl Page {
             SIGN_IN => (393, 23),
             SEARCH => (419, 23),
             PROVIDER => (466, 25),
+            MEDIA => (502, 23),
+            MEDIA_SIDE => (548, 25),
             FULLSCREEN => {
                 return Box2::at(
                     self.preview.x + 13,
@@ -299,7 +304,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             let current = GetFocus();
             if msg.message == WM_KEYDOWN && current != prior && IsChild(hwnd, current) != 0 {
                 let id = GetDlgCtrlID(current) as u16;
-                if (LAYOUT..=ENGINE).contains(&id) {
+                if (LAYOUT..=MEDIA_SIDE).contains(&id) {
                     let b = state.page.control(id);
                     let mut visible = RECT::default();
                     GetClientRect(hwnd, &mut visible);
@@ -414,11 +419,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_COMMAND if (*ptr).ready => {
                 let id = (wp & 0xffff) as u16;
                 let note = ((wp >> 16) & 0xffff) as u32;
-                if matches!(id, LAYOUT | ALIGN | ZONE | PROVIDER) && note == CBN_SELCHANGE {
+                if matches!(id, LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE)
+                    && note == CBN_SELCHANGE
+                {
                     read_controls(hwnd, ptr);
                 } else if note == BN_CLICKED {
                     match id {
-                        MOTION | SIGN_IN | SEARCH => read_controls(hwnd, ptr),
+                        MOTION | SIGN_IN | SEARCH | MEDIA => read_controls(hwnd, ptr),
                         MENU | FULLSCREEN => toggle_preview(hwnd, ptr, id),
                         APPLY => save(hwnd, ptr),
                         ENGINE => engine(hwnd, ptr),
@@ -501,7 +508,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 unsafe fn create_controls(hwnd: HWND, state: *mut State) {
     unsafe {
         let mut failed = false;
-        for id in LAYOUT..=ENGINE {
+        for id in LAYOUT..=MEDIA_SIDE {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
                     0,
@@ -520,12 +527,13 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 failed |= label.is_null();
             }
             let (class, text, style) = match id {
-                LAYOUT | ALIGN | ZONE | PROVIDER => (
+                LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE => (
                     "COMBOBOX",
                     match id {
                         LAYOUT => "Layout",
                         ALIGN => "Island position",
                         ZONE => "Activation zone",
+                        MEDIA_SIDE => "Media player side",
                         _ => "Search provider",
                     },
                     (CBS_DROPDOWNLIST | CBS_HASSTRINGS) as u32 | WS_VSCROLL,
@@ -540,7 +548,16 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                     },
                     TBS_NOTICKS,
                 ),
-                MOTION => ("BUTTON", "Animate menus", BS_AUTOCHECKBOX as u32),
+                MOTION => (
+                    "BUTTON",
+                    "Animate menus and media player",
+                    BS_AUTOCHECKBOX as u32,
+                ),
+                MEDIA => (
+                    "BUTTON",
+                    "Show taskbar media player",
+                    BS_AUTOCHECKBOX as u32,
+                ),
                 SIGN_IN => (
                     "BUTTON",
                     "Start SmartTaskbar when I sign in",
@@ -615,6 +632,11 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         );
         let choices: Vec<_> = s.choices.iter().map(String::as_str).collect();
         add(
+            MEDIA_SIDE as i32,
+            &["Left", "Right"],
+            usize::from(s.draft.media_side == MediaSide::Right),
+        );
+        add(
             PROVIDER as i32,
             &choices,
             s.choices
@@ -642,6 +664,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
             (MOTION, s.draft.animate),
             (SIGN_IN, s.draft.start_at_sign_in),
             (SEARCH, s.draft.search_redirect),
+            (MEDIA, s.draft.media_player),
         ] {
             SendDlgItemMessageW(hwnd, id as i32, BM_SETCHECK, on as usize, 0);
         }
@@ -671,7 +694,7 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=ENGINE {
+        for id in LAYOUT..=MEDIA_SIDE {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
@@ -705,7 +728,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             nTrackPos: 0,
         };
         SetScrollInfo(hwnd, SB_VERT, &info, 1);
-        for id in LAYOUT..=ENGINE {
+        for id in LAYOUT..=MEDIA_SIDE {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
             if !label.is_null() {
@@ -719,7 +742,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
                     SWP_NOACTIVATE | SWP_NOZORDER,
                 );
             }
-            let height = if matches!(id, LAYOUT | ALIGN | ZONE | PROVIDER) {
+            let height = if matches!(id, LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE) {
                 180
             } else {
                 b.h
@@ -772,6 +795,12 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
         s.draft.animate = check(MOTION as i32);
         s.draft.start_at_sign_in = check(SIGN_IN as i32);
         s.draft.search_redirect = check(SEARCH as i32);
+        s.draft.media_player = check(MEDIA as i32);
+        s.draft.media_side = if sel(MEDIA_SIDE as i32) == 0 {
+            MediaSide::Left
+        } else {
+            MediaSide::Right
+        };
         if let Some(provider) = s.choices.get(sel(PROVIDER as i32) as usize) {
             s.draft.web_engine = provider.clone();
         }
@@ -784,6 +813,10 @@ unsafe fn reflect(hwnd: HWND, state: *mut State) {
     unsafe {
         let s = &*state;
         EnableWindow(GetDlgItem(hwnd, ALIGN as i32), s.draft.island as i32);
+        EnableWindow(
+            GetDlgItem(hwnd, MEDIA_SIDE as i32),
+            s.draft.media_player as i32,
+        );
         EnableWindow(
             GetDlgItem(hwnd, PROVIDER as i32),
             s.draft.search_redirect as i32,
@@ -966,7 +999,7 @@ mod tests {
         let narrow = Page::layout(600, 640);
         assert!(wide.settings.x >= wide.preview.x + wide.preview.w);
         assert!(narrow.settings.y >= narrow.preview.y + narrow.preview.h);
-        assert!(narrow.control(APPLY).y > narrow.control(PROVIDER).y);
+        assert!(narrow.control(APPLY).y > narrow.control(MEDIA_SIDE).y);
     }
     #[test]
     fn preview_keeps_menu_visible_until_closed_and_honors_reduced_motion() {

@@ -20,6 +20,13 @@ pub enum Zone {
     Island,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MediaSide {
+    Left,
+    #[default]
+    Right,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -34,6 +41,8 @@ pub struct Settings {
     pub start_at_sign_in: bool,
     pub search_redirect: bool,
     pub web_engine: String,
+    pub media_player: bool,
+    pub media_side: MediaSide,
 }
 
 impl Default for Settings {
@@ -50,6 +59,8 @@ impl Default for Settings {
             start_at_sign_in: false,
             search_redirect: false,
             web_engine: "Google".into(),
+            media_player: false,
+            media_side: MediaSide::Right,
         }
     }
 }
@@ -171,7 +182,8 @@ mod tests {
     #[test]
     fn missing_features_default_to_off() {
         let s: Settings = serde_json::from_str(r#"{"radius":8}"#).unwrap();
-        assert!(!s.search_redirect && !s.start_at_sign_in);
+        assert!(!s.search_redirect && !s.start_at_sign_in && !s.media_player);
+        assert_eq!(s.media_side, MediaSide::Right);
         assert_eq!(s.radius, 8);
     }
     #[test]
@@ -192,6 +204,8 @@ mod tests {
         let next = Settings {
             alignment: Alignment::Right,
             animate: false,
+            media_player: true,
+            media_side: MediaSide::Left,
             ..s
         };
         next.save(&p).unwrap();

@@ -4,6 +4,7 @@ mod appearance;
 mod desktop;
 mod integrations;
 mod join;
+mod media;
 mod migrate;
 mod policy;
 mod profiles;
