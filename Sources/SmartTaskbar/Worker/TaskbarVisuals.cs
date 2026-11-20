@@ -14,6 +14,7 @@ namespace SmartTaskbar
             public TaskbarRetraction Animation = new();
             public int Pixels = -1;
             public bool Clipped;
+            public bool RaisedForSearch;
         }
 
         private readonly Timer _frames = new() { Interval = 16 };
@@ -46,7 +47,7 @@ namespace SmartTaskbar
         }
 
         // Returns true while the recovery process is still starting.
-        public bool Apply(TaskbarCoverage[] coverage, IntPtr revealed, IntPtr obscuredPeek, long now)
+        public bool Apply(TaskbarCoverage[] coverage, IntPtr revealed, IntPtr obscuredPeek, IntPtr searchBar, long now)
         {
             if (now < _retryAfter || _trays.Length != coverage.Length || _trays.Length == 0)
                 return false;
@@ -93,14 +94,26 @@ namespace SmartTaskbar
                 var covered = coverage[index] != TaskbarCoverage.Clear;
                 var visible = !covered || tray.Bar.Handle == revealed;
                 var promotion = _recovery.PeekPromotion(tray.Bar.Handle);
-                if (!covered)
+                if (tray.RaisedForSearch && tray.Bar.Handle != searchBar)
+                {
+                    if (!tray.Region!.RestorePeek(promotion))
+                    {
+                        CancelChanges();
+                        return false;
+                    }
+                    tray.RaisedForSearch = false;
+                }
+                if (tray.Bar.Handle == obscuredPeek)
+                {
+                    // Search's transparent window can intercept the whole island. Keep
+                    // native controls clickable without moving Search or stealing focus.
+                    tray.Region!.RaiseForPeek(promotion);
+                    tray.RaisedForSearch = tray.Bar.Handle == searchBar;
+                }
+                else if (!covered && !tray.RaisedForSearch)
                 {
                     // Explorer can restore the tray's normal stacking when fullscreen ends.
                     promotion.Reset();
-                }
-                else if (tray.Bar.Handle == obscuredPeek)
-                {
-                    tray.Region!.RaiseForPeek(promotion);
                 }
                 if (visible && !tray.Clipped && tray.Region!.IsEmpty() && !tray.Region.Restore())
                 {
@@ -197,6 +210,7 @@ namespace SmartTaskbar
                 }
                 tray.Clipped = false;
                 tray.Pixels = -1;
+                tray.RaisedForSearch = false;
                 tray.Animation = new TaskbarRetraction();
             }
             _recovery?.Dispose();

@@ -20,7 +20,7 @@ internal sealed class MenuExitAnimation : IDisposable
     private string _className = "";
     private Rectangle _local;
     private Color? _material;
-    private int _radius;
+    private int _radius, _dockTop;
     private bool _busy, _disposed;
     private ExitWindow? _layer;
 
@@ -37,14 +37,16 @@ internal sealed class MenuExitAnimation : IDisposable
             return;
         _material = material;
         _radius = Math.Clamp(radiusDip, 0, 24);
-        if (window == _window && wrapper == _wrapper && face == _face)
+        var visible = Rectangle.Intersect(face, wrapper);
+        if (window == _window && wrapper == _wrapper && visible == _face && face.Bottom == _dockTop)
             return;
         Close(false);
         _window = window;
         if (Fun.GetWindowThreadProcessId(window, out _process) == 0) return;
         _className = Fun.GetClassName(window);
         _wrapper = wrapper;
-        _face = Rectangle.Intersect(face, wrapper);
+        _face = visible;
+        _dockTop = face.Bottom;
         _dpi = Math.Clamp(dpi, 72, 480);
         _settle.Start();
     }
@@ -231,7 +233,7 @@ internal sealed class MenuExitAnimation : IDisposable
         // Collapse the panel material into its contact edge when the shell returns
         // no final frame. Only this shallow strip overlays the application.
         var depth = Math.Min(_visibleFace.Height, Math.Max(1, 64 * _dpi / 96));
-        var bounds = Rectangle.FromLTRB(_visibleFace.Left, _face.Bottom - depth, _visibleFace.Right, _face.Bottom);
+        var bounds = Rectangle.FromLTRB(_visibleFace.Left, _dockTop - depth, _visibleFace.Right, _dockTop);
         Play(null, bounds);
     }
 

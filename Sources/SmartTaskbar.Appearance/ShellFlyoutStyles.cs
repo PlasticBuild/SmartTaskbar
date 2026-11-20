@@ -17,46 +17,93 @@ internal static class ShellFlyoutStyles
     };
 
     public static JsonElement Build(string id, AppearanceOptions options)
-        => BuildCore(id, options, id == StartStyler && options.Layout == TaskbarLayout.Island ? PrimaryIslandWidth.Read() : 0);
+    {
+        if (options.Layout == TaskbarLayout.Island && id is StartStyler or Positions)
+        {
+            var geometry = PrimaryIslandWidth.Read();
+            return id == Positions ? BuildPositions(options, geometry.TrayShift)
+                : BuildStart(options, geometry.StartWidth, geometry.SearchInset);
+        }
+        return BuildCore(id, options, 0);
+    }
 
     internal static bool IsCurrent(string id, AppearanceOptions options, JsonElement settings)
     {
+        if (id == Positions && options.Layout == TaskbarLayout.Island)
+        {
+            int? shift = null;
+            if (settings.TryGetProperty("notificationCenter.horizontalAlignment", out var mode) && mode.GetString() == "right" &&
+                settings.TryGetProperty("notificationCenter.horizontalShift", out var value) &&
+                int.TryParse(value.GetString(), CultureInfo.InvariantCulture, out var parsed) && parsed <= 0)
+                shift = parsed;
+            return JsonElement.DeepEquals(settings, BuildPositions(options, shift));
+        }
         if (id != StartStyler || options.Layout != TaskbarLayout.Island)
             return JsonElement.DeepEquals(settings, Build(id, options));
+        if (ReadStartWidth(settings) is not { } width) return false;
+        var inset = 0;
+        if (ReadRule(settings, SearchRoot, 2) is { } margin &&
+            (!margin.StartsWith(SearchMargin, StringComparison.Ordinal) ||
+                !int.TryParse(margin.AsSpan(SearchMargin.Length), out inset) || inset < 0))
+            return false;
+        // Exact comparison also recognizes the earlier profile, which used the native (zero) inset.
+        return JsonElement.DeepEquals(settings, BuildStart(options, width, inset));
+    }
+
+    internal static int? ReadStartWidth(JsonElement settings)
+    {
+        var rule = ReadRule(settings, StartPanel, 0);
+        return rule != null && rule.StartsWith("Width=", StringComparison.Ordinal) &&
+            int.TryParse(rule.AsSpan(6), out var width) && width is > 0 and <= IslandMenuWidth.Maximum ? width : null;
+    }
+
+    private static string? ReadRule(JsonElement settings, string target, int index)
+    {
         foreach (var property in settings.EnumerateObject())
         {
             if (!property.Name.EndsWith(".target", StringComparison.Ordinal) ||
-                property.Value.GetString() != StartPanel)
+                property.Value.GetString() != target)
                 continue;
-            var key = property.Name[..^7] + ".styles[0]";
-            if (settings.TryGetProperty(key, out var style) && style.GetString() is { } rule &&
-                rule.StartsWith("Width=", StringComparison.Ordinal) && int.TryParse(rule.AsSpan(6), out var width) &&
-                width is > 0 and <= IslandMenuWidth.Maximum)
-                return JsonElement.DeepEquals(settings, BuildCore(id, options, width));
+            var key = property.Name[..^7] + $".styles[{index}]";
+            return settings.TryGetProperty(key, out var style) ? style.GetString() : null;
         }
-        return false;
+        return null;
     }
 
     private const string StartPanel = "StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu";
+    private const string SearchRoot = "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid";
+    private const string SearchMargin = "Margin=0,0,0,";
+
+    internal static JsonElement BuildPositions(AppearanceOptions options, int? trayShift, bool legacy = false)
+    {
+        var island = options.Layout == TaskbarLayout.Island;
+        var mode = island && trayShift.HasValue ? "right" : island && legacy ? "tray" : "windowsDefault";
+        var offset = (trayShift ?? 0).ToString(CultureInfo.InvariantCulture);
+        return JsonSerializer.SerializeToElement(new Dictionary<string, string>
+        {
+            ["notificationCenter.horizontalAlignment"] = mode,
+            ["notificationCenter.horizontalShift"] = offset,
+            ["actionCenter.horizontalAlignment"] = mode,
+            ["actionCenter.horizontalShift"] = offset,
+            ["startMenu.horizontalAlignment"] = island && (trayShift.HasValue || legacy)
+                ? options.Alignment.ToString().ToLowerInvariant() : "windowsDefault",
+            ["startMenu.horizontalShift"] = "0",
+            ["startMenu.verticalAlignment"] = "windowsDefault",
+            ["startMenu.verticalShift"] = "0"
+        });
+    }
 
     internal static JsonElement BuildCore(string id, AppearanceOptions options, int startWidth)
+        => BuildContent(id, options, startWidth, 0);
+
+    internal static JsonElement BuildStart(AppearanceOptions options, int startWidth, int searchInset)
+        => BuildContent(StartStyler, options, startWidth, searchInset);
+
+    private static JsonElement BuildContent(string id, AppearanceOptions options, int startWidth, int searchInset)
     {
         var glass = options.Layout is TaskbarLayout.FullWidth or TaskbarLayout.Island;
         if (id == Positions)
-        {
-            var island = options.Layout == TaskbarLayout.Island;
-            return JsonSerializer.SerializeToElement(new Dictionary<string, string>
-            {
-                ["notificationCenter.horizontalAlignment"] = island ? "tray" : "windowsDefault",
-                ["notificationCenter.horizontalShift"] = "0",
-                ["actionCenter.horizontalAlignment"] = island ? "tray" : "windowsDefault",
-                ["actionCenter.horizontalShift"] = "0",
-                ["startMenu.horizontalAlignment"] = island ? options.Alignment.ToString().ToLowerInvariant() : "windowsDefault",
-                ["startMenu.horizontalShift"] = "0",
-                ["startMenu.verticalAlignment"] = "windowsDefault",
-                ["startMenu.verticalShift"] = "0"
-            });
-        }
+            return BuildPositions(options, null);
 
         var settings = new Dictionary<string, string> { ["theme"] = "" };
         if (id == StartStyler)
@@ -81,8 +128,9 @@ internal static class ShellFlyoutStyles
                 if (islandLayout)
                 {
                     AddStyles(settings, StartPanel, [$"Width={startWidth}", $"MaxWidth={startWidth}"]);
-                    AddStyles(settings, "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid",
-                        ["Width=600", "HorizontalAlignment=Center"]);
+                    string[] search = ["Width=600", $"HorizontalAlignment={options.Alignment}"];
+                    AddStyles(settings, SearchRoot, searchInset > 0
+                        ? [.. search, SearchMargin + searchInset.ToString(CultureInfo.InvariantCulture)] : search);
                     AddStyles(settings, "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid > Grid#OuterBorderGrid",
                         DockedPanel(options));
                 }

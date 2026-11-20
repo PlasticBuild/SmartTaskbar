@@ -4,26 +4,35 @@ namespace SmartTaskbar.Appearance;
 
 internal static class PrimaryIslandWidth
 {
-    internal static int Read()
+    internal static (int StartWidth, int? TrayShift, int SearchInset) Read()
     {
         var previous = SetThreadDpiAwarenessContext(new IntPtr(-4));
         try { return ReadPhysicalWidth(); }
         finally { if (previous != IntPtr.Zero) SetThreadDpiAwarenessContext(previous); }
     }
 
-    private static int ReadPhysicalWidth()
+    private static (int, int?, int) ReadPhysicalWidth()
     {
         var tray = FindWindow("Shell_TrayWnd", null);
         if (tray == IntPtr.Zero || !GetWindowRect(tray, out var window))
-            return 592;
+            return (592, null, 0);
         var dpi = GetDpiForWindow(tray);
         var width = window.Right - window.Left;
         var height = window.Bottom - window.Top;
-        var monitorWidth = Screen.FromHandle(tray).Bounds.Width;
+        var screen = Screen.FromHandle(tray);
+        var monitorWidth = screen.Bounds.Width;
         if (width > height && GetWindowRgnBox(tray, out var region) > 1 && region.Right > region.Left &&
             region.Right - region.Left < width && region.Bottom - region.Top == height)
-            return IslandMenuWidth.Measure(region.Right - region.Left, monitorWidth, dpi);
-        return IslandMenuWidth.Measure((int)(592 * (dpi == 0 ? 96 : dpi) / 96), monitorWidth, dpi);
+        {
+            var island = Rectangle.FromLTRB(window.Left + region.Left, window.Top + region.Top,
+                window.Left + region.Right, window.Top + region.Bottom);
+            var widthDip = IslandMenuWidth.Measure(island.Width, monitorWidth, dpi);
+            return window.Bottom == screen.Bounds.Bottom
+                ? (widthDip, IslandMenuWidth.TrayShift(island, screen.WorkingArea, dpi),
+                    IslandMenuWidth.SearchInset(Rectangle.FromLTRB(window.Left, window.Top, window.Right, window.Bottom), screen.WorkingArea, dpi))
+                : (widthDip, null, 0);
+        }
+        return (IslandMenuWidth.Measure((int)(592 * (dpi == 0 ? 96 : dpi) / 96), monitorWidth, dpi), null, 0);
     }
 
     [StructLayout(LayoutKind.Sequential)]

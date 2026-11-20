@@ -20,6 +20,7 @@ internal sealed class AppearanceWindow : Form
     private readonly LinkLabel _restore = new() { Text = "&Restore Windows look", AutoSize = true, Enabled = false };
     private readonly LinkLabel _webSearch = new() { Text = "Configure Start &web searches…", AutoSize = true };
     private readonly CheckBox _animateMenus = new() { Text = "&Animate menus", AccessibleName = "Animate menus", AutoSize = true };
+    private readonly CheckBox _signIn = new() { Text = "Start SmartTaskbar when I sign &in", AccessibleName = "Start SmartTaskbar when I sign in", AutoSize = true };
     private readonly Button _menuPreview = new() { Text = "Preview &menu", AccessibleName = "Preview menu", AutoSize = true };
     private readonly Label _status = new() { AutoSize = true, AccessibleName = "Layout status" };
     private readonly TrackBar _radius = Slider("Corner radius in pixels", AppearanceOptions.MaxRadius, 1);
@@ -42,6 +43,7 @@ internal sealed class AppearanceWindow : Form
     private AppearanceOptions _current = new(TaskbarLayout.Windows);
     private RevealZone _currentZone;
     private bool _currentMenuAnimations;
+    private bool _currentSignIn;
     private bool _preferencesLoaded;
     private AppearanceOptions _loadedSelection;
     private bool _readingIcons;
@@ -111,6 +113,7 @@ internal sealed class AppearanceWindow : Form
         _activationZone.SelectedIndexChanged += (_, _) => RefreshSelection();
         _alignment.SelectedIndexChanged += (_, _) => RefreshSelection();
         _animateMenus.CheckedChanged += (_, _) => RefreshSelection();
+        _signIn.CheckedChanged += (_, _) => RefreshSelection();
         _menuPreview.Click += (_, _) => _preview.ToggleMenu();
         _fullscreen.CheckedChanged += (_, _) =>
         {
@@ -211,6 +214,8 @@ internal sealed class AppearanceWindow : Form
         var zoneLabel = new Label { Text = "Activation &zone", AutoSize = true, Margin = new Padding(0, 1, 0, 5) };
         behavior.Controls.Add(zoneLabel, 0, 1);
         behavior.Controls.Add(_activationZone, 0, 2);
+        _signIn.Margin = new Padding(0, 9, 0, 0);
+        behavior.Controls.Add(_signIn, 0, 3);
         cards.Controls.Add(behavior, 0, 2);
         _webSearch.Margin = new Padding(0, 3, 0, 5);
         cards.Controls.Add(_webSearch, 0, 3);
@@ -401,6 +406,8 @@ internal sealed class AppearanceWindow : Form
                 _activationZone.SelectedIndex = (int)_currentZone;
                 _currentMenuAnimations = MenuAnimationSettings.Read();
                 _animateMenus.Checked = _currentMenuAnimations;
+                _currentSignIn = _styles.SignIn.Enabled;
+                _signIn.Checked = _currentSignIn;
                 _loadedSelection = Selection;
                 _preferencesLoaded = true;
             }
@@ -420,6 +427,8 @@ internal sealed class AppearanceWindow : Form
 
             (_current, _running, _presetCurrent) = await _styles.ReadAsync();
             _currentZone = RevealZoneSettings.Read();
+            _currentSignIn = _styles.SignIn.Enabled;
+            _signIn.Checked = _currentSignIn;
             if (layout is null)
             {
                 _fullWidth.Checked = _current.Layout != TaskbarLayout.Island;
@@ -452,10 +461,16 @@ internal sealed class AppearanceWindow : Form
         }
     }
 
-    private bool PreferencesChanged => _currentMenuAnimations != _animateMenus.Checked || _currentZone != SelectedZone;
+    private bool PreferencesChanged => _currentMenuAnimations != _animateMenus.Checked ||
+        _currentZone != SelectedZone || _currentSignIn != _signIn.Checked;
 
     private void SavePreferences()
     {
+        if (_currentSignIn != _signIn.Checked)
+        {
+            _styles.SignIn.Save(_signIn.Checked);
+            _currentSignIn = _signIn.Checked;
+        }
         if (_currentZone != SelectedZone)
         {
             RevealZoneSettings.Save(SelectedZone);
@@ -474,7 +489,7 @@ internal sealed class AppearanceWindow : Form
         _radius.Enabled = _transparency.Enabled = _hoverLift.Enabled = _clickDepth.Enabled = !_busy;
         _activationZone.Enabled = !_busy;
         _alignment.Enabled = !_busy && _island.Checked;
-        _animateMenus.Enabled = !_busy;
+        _animateMenus.Enabled = _signIn.Enabled = !_busy;
         _apply.Enabled = !_busy && ((_available && (_current != Selection || !_running || !_presetCurrent)) ||
             (_preferencesLoaded && PreferencesChanged && (_available || Selection == _loadedSelection)));
         _restore.Enabled = _available && !_busy && _current.Layout != TaskbarLayout.Windows;

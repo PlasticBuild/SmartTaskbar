@@ -7,9 +7,12 @@ namespace SmartTaskbar;
 internal sealed class IslandWidthObserver : IDisposable
 {
     private IntPtr _preferred;
-    private int _pending;
-    private int _sent;
-    private int _writing;
+    private readonly record struct Geometry(int Width, int? TrayShift, int SearchInset);
+    private Geometry? _pending;
+    private Geometry? _sent;
+    private Geometry _writing;
+    private readonly EventWaitHandle _openEvent = new(false, EventResetMode.ManualReset, IslandMenuWidth.FlyoutOpenEvent);
+    private bool _menuOpen;
     private long _settledAt;
     private long _retryAfter;
     private Process? _writer;
@@ -25,26 +28,55 @@ internal sealed class IslandWidthObserver : IDisposable
             completed.Dispose();
             _writer = null;
         }
-        if (flyoutBar != IntPtr.Zero)
-            _preferred = flyoutBar;
-        var bar = bars.Find(item => item.Handle == _preferred);
-        if (bar.Handle == IntPtr.Zero)
-            bar = bars.Find(item => item.Handle == primary);
-        if (bar.Handle == IntPtr.Zero || bar.Edge is TaskbarPosition.Left or TaskbarPosition.Right ||
-            visuals.OpenIslandBounds(bar.Handle) is not { } island)
+        var open = flyoutBar != IntPtr.Zero;
+        if (_menuOpen != open)
         {
-            _pending = 0;
-            _sent = 0;
+            _menuOpen = open;
+            if (open) _openEvent.Set(); else _openEvent.Reset();
+        }
+        if (open)
+        {
+            _preferred = flyoutBar;
             return;
         }
-        var width = IslandMenuWidth.Measure(island.Width, bar.Display.Width, Fun.GetDpiForWindow(bar.Handle));
-        if (width != _pending)
+        var primaryBar = bars.Find(item => item.Handle == primary);
+        if (primaryBar.Handle == IntPtr.Zero)
+            return;
+        var bar = bars.Find(item => item.Handle == _preferred);
+        if (bar.Handle == IntPtr.Zero)
+            bar = primaryBar;
+        int? trayShift = null;
+        var searchInset = 0;
+        if (primaryBar.Edge == TaskbarPosition.Bottom)
         {
-            _pending = width;
+            if (visuals.OpenIslandBounds(primary) is not { } primaryIsland)
+            {
+                _pending = _sent = null;
+                return;
+            }
+            var monitor = MonitorInfo.Create();
+            var work = Fun.GetMonitorInfo(primaryBar.Monitor, ref monitor) ? monitor.WorkArea.ToRectangle() : primaryBar.Display;
+            trayShift = IslandMenuWidth.TrayShift(primaryIsland, work, Fun.GetDpiForWindow(primary));
+            if (bar.Handle == primary)
+                searchInset = IslandMenuWidth.SearchInset(bar.ShownBounds, work, Fun.GetDpiForWindow(primary));
+        }
+        if (bar.Handle != primary && bar.Edge == TaskbarPosition.Bottom)
+        {
+            var monitor = MonitorInfo.Create();
+            if (Fun.GetMonitorInfo(bar.Monitor, ref monitor))
+                searchInset = IslandMenuWidth.SearchInset(bar.ShownBounds, monitor.WorkArea.ToRectangle(), Fun.GetDpiForWindow(bar.Handle));
+        }
+        var width = bar.Edge is TaskbarPosition.Top or TaskbarPosition.Bottom &&
+            visuals.OpenIslandBounds(bar.Handle) is { } island
+            ? IslandMenuWidth.Measure(island.Width, bar.Display.Width, Fun.GetDpiForWindow(bar.Handle)) : 0;
+        var geometry = new Geometry(width, trayShift, searchInset);
+        if (geometry != _pending)
+        {
+            _pending = geometry;
             _settledAt = now + 300;
             return;
         }
-        if (now < _settledAt || now < _retryAfter || width == _sent || _writer != null)
+        if (now < _settledAt || now < _retryAfter || geometry == _sent || _writer != null)
             return;
         _retryAfter = now + 5_000;
         try
@@ -57,8 +89,10 @@ internal sealed class IslandWidthObserver : IDisposable
             var info = new ProcessStartInfo(client) { UseShellExecute = false, CreateNoWindow = true };
             info.ArgumentList.Add(IslandMenuWidth.Argument);
             info.ArgumentList.Add(width.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            info.ArgumentList.Add(trayShift?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "native");
+            info.ArgumentList.Add(searchInset.ToString(System.Globalization.CultureInfo.InvariantCulture));
             _writer = Process.Start(info);
-            _writing = width;
+            _writing = geometry;
             if (_writer != null)
                 _retryAfter = 0;
         }
@@ -68,5 +102,19 @@ internal sealed class IslandWidthObserver : IDisposable
         }
     }
 
-    public void Dispose() => _writer?.Dispose();
+    public void Reset()
+    {
+        _openEvent.Reset();
+        _menuOpen = false;
+        _preferred = IntPtr.Zero;
+        _pending = _sent = null;
+        _retryAfter = 0;
+    }
+
+    public void Dispose()
+    {
+        Reset();
+        _openEvent.Dispose();
+        _writer?.Dispose();
+    }
 }

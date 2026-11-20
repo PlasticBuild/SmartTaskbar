@@ -169,7 +169,7 @@ internal sealed class TaskbarSandbox : PictureBox
             _edgeSince = now;
         var hoveringBar = _barVisible > .98f && _windowSize > .98f &&
             _pointer is { } cursor && _restingTaskbar.Contains(cursor);
-        var show = !_fullscreen || _menuOpen || hoveringBar || (atEdge && now - _edgeSince >= 150);
+        var show = !_fullscreen || _menuOpen || _menuAmount > 0 || hoveringBar || (atEdge && now - _edgeSince >= 150);
         var nextSize = Approach(_windowSize, _fullscreen ? 1 : 0, delta);
         var nextBar = Approach(_barVisible, show ? 1 : 0, delta);
         var nextIsland = Approach(_islandAmount, _options.Layout == TaskbarLayout.Island ? 1 : 0, delta);
@@ -275,7 +275,7 @@ internal sealed class TaskbarSandbox : PictureBox
         var bar = _restingTaskbar;
         bar.Y += (depth + 5 * dpi) * (1 - _barVisible);
         if (_menuAmount > 0)
-            DrawPreviewMenu(graphics, bar, dpi, apps);
+            DrawPreviewMenu(graphics, _restingTaskbar, dpi, apps);
         using var shape = Rounded(bar, _options.Radius * .74f * dpi);
         var alpha = (int)Math.Clamp(248 - _options.Transparency * 1.25, 142, 248);
         using var glass = new SolidBrush(Color.FromArgb(alpha, _theme.Dark ? Color.FromArgb(21, 26, 36) : Color.FromArgb(234, 240, 248)));
@@ -330,9 +330,10 @@ internal sealed class TaskbarSandbox : PictureBox
         var width = Math.Min(177 * dpi, bar.Width);
         var height = Math.Min(75 * dpi, _display.Height / 2);
         var eased = 1 - (1 - _menuAmount) * (1 - _menuAmount);
-        var bounds = new RectangleF(bar.Left + (bar.Width - width) / 2, bar.Top - height * eased, width, height);
+        var bounds = new RectangleF(bar.Left + (bar.Width - width) / 2, bar.Top - height, width, height);
+        var revealedHeight = bounds.Height * eased;
         var save = graphics.Save();
-        graphics.SetClip(new RectangleF(bounds.X, bounds.Y, bounds.Width, height * eased), CombineMode.Intersect);
+        graphics.SetClip(new RectangleF(bounds.X, bounds.Bottom - revealedHeight, bounds.Width, revealedHeight), CombineMode.Intersect);
         using var path = Rounded(bounds, (_options.Radius + 2) * dpi);
         using var material = new SolidBrush(Color.FromArgb(245 - _options.Transparency, _theme.Input));
         using var edge = new Pen(_theme.Line, dpi);

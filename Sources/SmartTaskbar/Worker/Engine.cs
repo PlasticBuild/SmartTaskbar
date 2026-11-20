@@ -10,7 +10,9 @@ namespace SmartTaskbar
         private const uint MoveSizeEnded = 0x000B;
         private const uint MinimizeEnded = 0x0017;
         private const uint ObjectDestroyed = 0x8001;
+        private const uint ObjectShown = 0x8002;
         private const uint ObjectHidden = 0x8003;
+        private const uint ObjectUncloaked = 0x8018;
         private const uint LocationChanged = 0x800B;
         private const uint SkipOwnProcess = 2;
         private const int CloseWindow = 0x0010;
@@ -36,7 +38,7 @@ namespace SmartTaskbar
         private readonly Func<bool> _isTablet;
         private readonly WinEventCallback _onWindowEvent;
         private readonly EnumWindowCallback _inspectWindow;
-        private readonly IntPtr[] _hooks = new IntPtr[4];
+        private readonly IntPtr[] _hooks = new IntPtr[5];
         private readonly uint _taskbarCreated = RegisterWindowMessage("TaskbarCreated");
 
         private IntPtr _shell;
@@ -113,6 +115,7 @@ namespace SmartTaskbar
 
             _visuals.Reset();
             _flyoutPlacement.Reset();
+            _islandWidth.Reset();
             ClearEdgeReveal();
             _visualPeek = IntPtr.Zero;
             _flyout = _flyoutBar = IntPtr.Zero;
@@ -146,6 +149,7 @@ namespace SmartTaskbar
                 _hooks[2] = WatchEvent(MinimizeEnded);
                 _hooks[3] = SetWinEventHook(ObjectDestroyed, ObjectHidden, IntPtr.Zero, _onWindowEvent,
                     0, 0, SkipOwnProcess);
+                _hooks[4] = WatchEvent(ObjectUncloaked);
             }
 
             _topologyDirty = true;
@@ -178,7 +182,9 @@ namespace SmartTaskbar
             if (eventType == LocationChanged && hwnd != _foreground)
                 return;
 
-            QueueUpdate();
+            var openingFlyout = (eventType is ForegroundChanged or ObjectShown or ObjectUncloaked) &&
+                TaskbarHelper.IsTraySurface(hwnd.GetClassName());
+            QueueUpdate(openingFlyout ? 1 : 65);
         }
 
         protected override void WndProc(ref Message message)
@@ -220,6 +226,7 @@ namespace SmartTaskbar
             var shell = FindWindow(TaskbarHelper.PrimaryClass, null);
             if (_shell != shell)
             {
+                _islandWidth.Reset();
                 _shell = shell;
                 GetWindowThreadProcessId(shell, out _shellProcess);
                 ClearEdgeReveal();
@@ -266,6 +273,7 @@ namespace SmartTaskbar
                     _tablet = true;
                     _visuals.Reset();
                     _flyoutPlacement.Reset();
+                    _islandWidth.Reset();
                     _cursorSampler.Stop();
                     ClearEdgeReveal();
                     _visualPeek = IntPtr.Zero;
@@ -407,10 +415,15 @@ namespace SmartTaskbar
                 }
             }
 
-            if (_visuals.Apply(_coverage, reveal, obscuredPeek, now))
-                QueueUpdate();
             var flyoutTaskbar = _bars.Find(bar => bar.Handle == flyoutBar);
-            _flyoutPlacement.Apply(_flyout, flyoutTaskbar, _visuals.OpenIslandBounds(flyoutBar), now);
+            var island = _visuals.OpenIslandBounds(flyoutBar);
+            _flyoutPlacement.Apply(_flyout, flyoutTaskbar, island);
+            var searchBar = _flyoutPlacement.IsSearchOpen ? flyoutBar : IntPtr.Zero;
+            if (searchBar != IntPtr.Zero && island is { } bounds &&
+                WindowAt(new Point(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2)) == _flyout)
+                obscuredPeek = searchBar;
+            if (_visuals.Apply(_coverage, reveal, obscuredPeek, searchBar, now))
+                QueueUpdate();
             _islandWidth.Observe(_bars, _shell, flyoutBar, _visuals, now);
         }
 

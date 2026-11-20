@@ -33,8 +33,7 @@ internal sealed class TaskbarStyles(string folder)
 {
     private const string ModId = "windows-11-taskbar-styler";
     private const string ModVersion = "1.11.2";
-    private const string StartupKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string StartupName = "SmartTaskbarAppearance";
+    internal SignInSettings SignIn { get; } = new(folder, Registry.CurrentUser);
     private readonly string _portable = Path.Combine(folder, "Windhawk");
     private string Cli => Path.Combine(_portable, "windhawk-cli.exe");
     private string Host => Path.Combine(_portable, "windhawk.exe");
@@ -65,10 +64,12 @@ internal sealed class TaskbarStyles(string folder)
                         Alignment = layout == TaskbarLayout.Island ? alignment : IslandAlignment.Center
                     };
                     if (JsonElement.DeepEquals(Settings, BuildPreset(options)) ||
-                        JsonElement.DeepEquals(Settings, BuildPreset(options, joinedMenus: false)) ||
-                        JsonElement.DeepEquals(Settings, BuildPreset(options, includeMenus: false)) ||
-                        JsonElement.DeepEquals(Settings, BuildPreset(options, includeClickThrough: false, includeMenus: false)) ||
-                        JsonElement.DeepEquals(Settings, BuildPreset(options, includeMotion: false,
+                        JsonElement.DeepEquals(Settings, BuildProfile(options, verticalIsland: true, guardVerticalRotation: false)) ||
+                        JsonElement.DeepEquals(Settings, BuildProfile(options, verticalIsland: false)) ||
+                        JsonElement.DeepEquals(Settings, BuildProfile(options, verticalIsland: false, joinedMenus: false)) ||
+                        JsonElement.DeepEquals(Settings, BuildProfile(options, verticalIsland: false, includeMenus: false)) ||
+                        JsonElement.DeepEquals(Settings, BuildProfile(options, verticalIsland: false, includeClickThrough: false, includeMenus: false)) ||
+                        JsonElement.DeepEquals(Settings, BuildProfile(options, verticalIsland: false, includeMotion: false,
                             includeClickThrough: false, includeMenus: false)))
                         return options;
                 }
@@ -126,8 +127,8 @@ internal sealed class TaskbarStyles(string folder)
             var (updated, _) = await ReadProfilesAsync();
             if (updated.Options != options)
                 throw new InvalidOperationException("Windows did not retain the requested profile.");
-            SetStartup(styled);
-            RefreshWidthCompanion(options);
+            SignIn.ApplyLayout(styled);
+            RefreshWidthCompanion(options, applied: true);
         }
         catch (Exception error) when (IsServiceError(error))
         {
@@ -146,20 +147,49 @@ internal sealed class TaskbarStyles(string folder)
         }
     }
 
-    internal async Task SyncStartWidthAsync(int width)
+    internal async Task<bool> SyncStartWidthAsync(int width, bool updatePosition, int? trayShift, int searchInset)
     {
-        if (width is <= 0 or > IslandMenuWidth.Maximum)
-            return;
+        if (width is < 0 or > IslandMenuWidth.Maximum)
+            return true;
         using var writeLock = await AcquireWriteLockAsync();
         var (current, profiles) = await ReadProfilesAsync();
         var options = current.Options;
-        var start = profiles.FirstOrDefault(item => item.Id == ShellFlyoutStyles.StartStyler);
-        if (options.Layout != TaskbarLayout.Island || start is null || !start.Profile.Enabled ||
-            !ShellFlyoutStyles.IsCurrent(start.Id, options, start.Profile.Settings))
-            return;
-        var desired = ShellFlyoutStyles.BuildCore(start.Id, options, width);
-        if (!JsonElement.DeepEquals(desired, start.Profile.Settings))
-            await WritePresetAsync(desired, start.Id);
+        if (options.Layout != TaskbarLayout.Island)
+            return true;
+        // A native position change reloads shell settings and can move an open panel.
+        // The engine signals this throughout the menu interaction. Retry once it closes.
+        EventWaitHandle.TryOpenExisting(IslandMenuWidth.FlyoutOpenEvent, out var menu);
+        using (menu)
+        {
+            foreach (var shell in profiles)
+            {
+                if (!shell.Profile.Enabled) continue;
+                var settings = shell.Profile.Settings;
+                var desired = shell.Id switch
+                {
+                    ShellFlyoutStyles.StartStyler when (width > 0 ? width : ShellFlyoutStyles.ReadStartWidth(settings)) is int startWidth =>
+                        ShellFlyoutStyles.BuildStart(options, startWidth, searchInset),
+                    ShellFlyoutStyles.Positions when updatePosition => ShellFlyoutStyles.BuildPositions(options, trayShift),
+                    _ => default
+                };
+                if (desired.ValueKind == JsonValueKind.Undefined || JsonElement.DeepEquals(desired, shell.Profile.Settings))
+                    continue;
+                var managed = ShellFlyoutStyles.IsCurrent(shell.Id, options, settings) || shell.Id switch
+                {
+                    ShellFlyoutStyles.Positions => JsonElement.DeepEquals(settings,
+                        ShellFlyoutStyles.BuildPositions(options, null, legacy: true)),
+                    ShellFlyoutStyles.StartStyler => ShellFlyoutStyles.IsCurrent(shell.Id,
+                        options with { Alignment = IslandAlignment.Center }, settings),
+                    _ => false
+                };
+                if (!managed)
+                    continue;
+                if (menu?.WaitOne(0) == true)
+                    return false;
+                await WritePresetAsync(desired, shell.Id);
+            }
+            return true;
+        }
     }
 
     private async Task<FileStream> AcquireWriteLockAsync()
@@ -176,25 +206,30 @@ internal sealed class TaskbarStyles(string folder)
 
     public async Task ResumeAsync()
     {
+        SignIn.StartEngine();
+        using var writeLock = await AcquireWriteLockAsync();
         var (previous, _) = await ReadProfilesAsync();
-        RefreshWidthCompanion(previous.Options);
-        if (previous.Options.Layout is not (TaskbarLayout.FullWidth or TaskbarLayout.Island))
+        var options = previous.Options;
+        RefreshWidthCompanion(options);
+        if (options.Layout is not (TaskbarLayout.FullWidth or TaskbarLayout.Island))
             return;
 
         await CheckScopeAsync();
+        // Match only our previously shipped side layouts before migrating their orientation rules.
+        if (options.Layout == TaskbarLayout.Island &&
+            (JsonElement.DeepEquals(previous.Settings, BuildProfile(options, verticalIsland: false)) ||
+             JsonElement.DeepEquals(previous.Settings, BuildProfile(options, verticalIsland: true, guardVerticalRotation: false))))
+            await WritePresetAsync(BuildPreset(options));
         await StartHostAsync();
     }
 
-    private void RefreshWidthCompanion(AppearanceOptions options)
+    private void RefreshWidthCompanion(AppearanceOptions options, bool applied = false)
     {
         var picker = Path.GetFullPath(Path.Combine(folder, "SmartTaskbar.Appearance.exe"));
-        using var startup = Registry.CurrentUser.OpenSubKey(StartupKey);
-        var ownsStyling = string.Equals(startup?.GetValue(StartupName) as string, $"\"{picker}\" --resume",
-            StringComparison.OrdinalIgnoreCase);
         using var current = Registry.CurrentUser.OpenSubKey(IslandMenuWidth.Preferences);
         var registered = current?.GetValue(IslandMenuWidth.CompanionSetting) as string;
         var ours = string.Equals(registered, picker, StringComparison.OrdinalIgnoreCase);
-        var wanted = ownsStyling && options.Layout == TaskbarLayout.Island;
+        var wanted = options.Layout == TaskbarLayout.Island && (ours || SignIn.Enabled || applied);
         var radius = Math.Clamp(options.Radius, 0, AppearanceOptions.MaxRadius);
         if (wanted == ours && (!wanted || Equals(current?.GetValue(IslandMenuWidth.CornerRadiusSetting), radius)))
             return;
@@ -335,6 +370,11 @@ internal sealed class TaskbarStyles(string folder)
 
     private static JsonElement BuildPreset(AppearanceOptions options, bool includeMotion = true, bool includeClickThrough = true,
         bool includeMenus = true, bool joinedMenus = true)
+        => BuildProfile(options, true, includeMotion, includeClickThrough, includeMenus, joinedMenus);
+
+    private static JsonElement BuildProfile(AppearanceOptions options, bool verticalIsland,
+        bool includeMotion = true, bool includeClickThrough = true, bool includeMenus = true, bool joinedMenus = true,
+        bool guardVerticalRotation = true)
     {
         if (options.Layout is not (TaskbarLayout.FullWidth or TaskbarLayout.Island))
             throw new ArgumentOutOfRangeException(nameof(options));
@@ -353,6 +393,29 @@ internal sealed class TaskbarStyles(string folder)
             .Replace("__TRANSPARENCY__", transparency.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("__TINT_OPACITY__", (1 - transparency / 100d).ToString("0.00", CultureInfo.InvariantCulture), StringComparison.Ordinal);
         var settings = JsonSerializer.Deserialize<Dictionary<string, string>>(preset)!;
+        if (verticalIsland && options.Layout == TaskbarLayout.Island)
+        {
+            using var vertical = typeof(TaskbarStyles).Assembly.GetManifestResourceStream(
+                "SmartTaskbar.Appearance.Profiles.IslandVertical.json")!;
+            foreach (var (key, value) in JsonSerializer.Deserialize<Dictionary<string, string>>(vertical)!)
+                settings[key] = value.Replace("__RADIUS__", radius.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                    .Replace("__TINT_OPACITY__", (1 - transparency / 100d).ToString("0.00", CultureInfo.InvariantCulture), StringComparison.Ordinal);
+            if (guardVerticalRotation)
+            {
+                // Explorer can measure the new side host before its docking state updates. A horizontal
+                // desired width can then become the thickness of the primary taskbar for the entire session.
+                settings["styleConstants[2]"] = "Horizontal=(DockEdge==`left`?0:(DockEdge==`right`?0:(HostWidth==``?1:(HostHeight==``?1:HostWidth>=HostHeight))))";
+                settings["controlStyles[2].styles[1]"] = "Tag@DockedLeft=left";
+                settings["controlStyles[2].styles[2]"] = "Tag@DockedRight=right";
+                settings["controlStyles[12].target"] = "Taskbar.ExperienceToggleButton[AutomationProperties.AutomationId=StartButton]";
+                settings["controlStyles[12].styles[0]"] = "ActualWidth=>NativeButtonWidth";
+                settings["controlStyles[13].target"] = ":root > ScrollViewer";
+                settings["controlStyles[13].styles[0]"] = "ActualWidth=>HostWidth";
+                settings["controlStyles[13].styles[1]"] = "ActualHeight=>HostHeight";
+                settings["controlStyles[1].styles[3]"] = "MaxWidth={{$Horizontal?skip():(NativeButtonWidth==``?skip():(NativeButtonWidth>0?NativeButtonWidth:skip()))}}";
+                settings["controlStyles[1].styles[4]"] = "HorizontalAlignment={{DockEdge==`right`?`Right`:(DockEdge==`left`?`Left`:skip())}}";
+            }
+        }
         if (includeClickThrough && options.Layout == TaskbarLayout.Island)
             settings["clickThroughTaskbar"] = "1";
         if (includeMotion)
@@ -466,23 +529,6 @@ internal sealed class TaskbarStyles(string folder)
     {
         try { return JsonDocument.Parse(output); }
         catch (JsonException) { return null; }
-    }
-
-    private static void SetStartup(bool enabled)
-    {
-        var command = $"\"{Environment.ProcessPath}\" --resume";
-        using var key = Registry.CurrentUser.CreateSubKey(StartupKey);
-        var previous = key.GetValue(StartupName) as string;
-        if (enabled)
-        {
-            if (previous is not null && !string.Equals(previous, command, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Another copy of SmartTaskbar Appearance is already configured to run at sign-in.");
-            key.SetValue(StartupName, command);
-        }
-        else if (string.Equals(previous, command, StringComparison.OrdinalIgnoreCase))
-        {
-            key.DeleteValue(StartupName, throwOnMissingValue: false);
-        }
     }
 
     internal static bool IsServiceError(Exception error) => error is IOException or Win32Exception or

@@ -42,11 +42,15 @@ The live preview uses your Windows taskbar app icons and follows the Windows the
 
 **Activation zone** controls where Intelligent auto-hide responds along each display edge. Choose the entire edge, the center half, or the taskbar's visible width. In Island layout, clicks beside the bar reach the window underneath. A taskbar flyout keeps its originating bar visible while it is open.
 
-With a bottom island, choose **Left**, **Center**, or **Right** in SmartTaskbar Appearance. Start follows the island's width as app buttons appear or disappear. Its width stays between 420 and 760 device-independent pixels where the screen permits. Quick Settings and Notification Center open at the tray end. The calendar expands within the notification panel. **Animate menus** controls the transition between these flyouts and the island. The selected layout resumes at sign-in.
+With a bottom island, choose **Left**, **Center**, or **Right** in SmartTaskbar Appearance. Start follows the island's width as app buttons appear or disappear. Its width stays between 420 and 760 device-independent pixels where the screen permits. Quick Settings and Notification Center open at the tray end. The calendar expands within the notification panel. **Animate menus** controls the transition between these flyouts and the island.
+
+Open **SmartTaskbar Appearance** from the Desktop or Start menu. Under **Intelligent auto-hide**, **Start SmartTaskbar when I sign in** controls whether SmartTaskbar starts and restores your selected appearance at Windows sign-in.
+
+When Windows places the taskbar on the left or right edge, the island wraps the vertical stack of controls on each display. Clicks above and below it reach the window underneath. The primary display includes the system tray.
 
 The picker runs independently of Intelligent auto-hide. Styling uses a portable Windhawk instance scoped to Explorer and the native menu hosts. [Windhawk release](https://github.com/ramensoftware/windhawk/releases/tag/2.0.0-alpha.8) · [Taskbar Styler](https://windhawk.net/mods/windows-11-taskbar-styler) · [Start Menu Styler](https://windhawk.net/mods/windows-11-start-menu-styler) · [Notification Center Styler](https://windhawk.net/mods/windows-11-notification-center-styler) · [Shell Flyout Positions](https://windhawk.net/mods/shell-flyout-positions)
 
-Publish the Appearance project for Windows x64 into the Appearance directory, then run **Sources/SmartTaskbar.Appearance/Prepare-Windhawk.ps1** with **-OutputDirectory ./Appearance**. Open **Appearance/SmartTaskbar.Appearance.exe**.
+Publish the Appearance project for Windows x64 into the Appearance directory, then run **Sources/SmartTaskbar.Appearance/Prepare-Windhawk.ps1** with `-OutputDirectory ./Appearance -CreateShortcuts` to prepare the styling components and create both shortcuts.
 
 ## Earlier releases
 

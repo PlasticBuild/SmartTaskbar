@@ -8,8 +8,26 @@ internal static class IslandMenuWidth
     internal const string CompanionSetting = "IslandWidthCompanion";
     internal const string CornerRadiusSetting = "IslandCornerRadius";
     internal const string Argument = "--sync-island-start";
+    internal const string FlyoutOpenEvent = @"Local\SmartTaskbar.IslandFlyoutOpen";
     internal const int Maximum = 760;
     internal const int SideInset = 12;
+
+    internal static int SearchInset(Rectangle bar, Rectangle work, uint dpi)
+    {
+        var overlap = Math.Clamp(work.Bottom - bar.Top, 0, bar.Height);
+        // Search includes its own lower shadow gutter inside the native host.
+        var depth = (int)Math.Round(overlap * 96d / (dpi == 0 ? 96u : dpi));
+        return Math.Max(0, depth - 18);
+    }
+
+    internal static int TrayShift(Rectangle island, Rectangle work, uint dpi)
+    {
+        var scale = dpi == 0 ? 96u : dpi;
+        var inset = (int)Math.Round((work.Right - island.Right) * 96d / scale);
+        var available = (int)((long)work.Width * 96 / scale);
+        // The wider of the two native tray wrappers is 384 DIPs, including its shadow.
+        return Math.Clamp(SideInset - inset, Math.Min(0, 384 - available), 0);
+    }
 
     internal static int Measure(int islandPixels, int monitorPixels, uint dpi)
     {

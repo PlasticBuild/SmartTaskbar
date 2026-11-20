@@ -10,6 +10,16 @@ Expect(IslandMenuWidth.Measure(810, 1280, 144) == 540, "Start uses the originati
 var startHost = new Rectangle(-1920, 0, 1920, 1040);
 var leftIsland = new Rectangle(-1902, 1040, 1350, 72);
 var rightIsland = new Rectangle(-1368, 1040, 1350, 72);
+Expect(IslandMenuWidth.SearchInset(leftIsland, new Rectangle(-1920, -100, 1920, 1212), 144) == 30,
+    "Search reserves the 48-DIP bottom rail beyond its native shadow on a stacked display");
+Expect(IslandMenuWidth.SearchInset(leftIsland, startHost, 144) == 0,
+    "Search keeps its normal content height while Windows already reserves the full rail");
+Expect(IslandMenuWidth.TrayShift(rightIsland, startHost, 144) == 0,
+    "The native tray shadow consumes the 12-DIP right island inset");
+Expect(IslandMenuWidth.TrayShift(leftIsland, startHost, 144) == -356,
+    "Left-island tray flyouts use screen-right offsets at the real monitor DPI");
+Expect(IslandMenuWidth.TrayShift(new Rectangle(-1910, 0, 25, 48), startHost, 96) == 384 - startHost.Width,
+    "The native Quick Settings wrapper stays inside even a very short left island");
 Expect(IslandMenuWidth.StartFaceLeft(startHost, leftIsland, 1140, 144) == leftIsland.Left,
     "A capped Start keeps the left island's outside edge at 150% on a negative-coordinate display");
 Expect(IslandMenuWidth.StartFaceLeft(startHost, rightIsland, 1140, 144) == rightIsland.Right - 1140,

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using Microsoft.Win32;
-using Timer = System.Windows.Forms.Timer;
 
 namespace SmartTaskbar
 {
@@ -8,26 +7,16 @@ namespace SmartTaskbar
 
     internal sealed class IslandFlyoutPlacement : IDisposable
     {
-        private const uint MoveOnly = 0x0001 | 0x0004 | 0x0010 | 0x0200 | 0x4000;
         private const int Duration = 185;
-        private readonly Timer _slide = new() { Interval = 15 };
         private readonly IslandMenuJoin _join = new();
         private readonly MenuExitAnimation _exit = new();
         private IntPtr _window;
-        private int _process;
-        private Rectangle _original;
-        private Rectangle _requested;
-        private Rectangle _target;
-        private long _placementDeadline;
-        private long _started;
-        private int _travel;
         private int _radius;
         private bool _animate;
         private IslandMenuSurface? _kind;
+        public bool IsSearchOpen => _kind == IslandMenuSurface.Search;
 
-        public IslandFlyoutPlacement() => _slide.Tick += (_, _) => SlideFrame();
-
-        public void Apply(IntPtr window, TaskbarInfo bar, Rectangle? island, long now)
+        public void Apply(IntPtr window, TaskbarInfo bar, Rectangle? island)
         {
             if (window == IntPtr.Zero || bar.Edge != TaskbarPosition.Bottom || island is not { } surface)
             {
@@ -41,9 +30,9 @@ namespace SmartTaskbar
                 End(animateClose: false);
                 _exit.Close(false);
                 _window = window;
-                if (GetWindowThreadProcessId(window, out _process) == 0 || !GetWindowRect(window, out var raw))
+                if (GetWindowThreadProcessId(window, out var process) == 0 || !GetWindowRect(window, out var raw))
                     return;
-                _kind = Identify(window, _process, raw.ToRectangle(), bar.Display, surface);
+                _kind = Identify(window, process, raw.ToRectangle(), bar.Display, surface);
                 if (_kind.HasValue)
                 {
                     _animate = MenuAnimationSettings.Read();
@@ -60,65 +49,15 @@ namespace SmartTaskbar
 
             var dpi = (int)GetDpiForWindow(bar.Handle);
             if (dpi == 0) dpi = 96;
-            var x = actual.X;
-            if (kind is IslandMenuSurface.QuickSettings or IslandMenuSurface.Notifications)
-                x = Math.Clamp(surface.Right + Scale(12, dpi) - actual.Width, bar.Display.Left, bar.Display.Right - actual.Width);
-            else if (kind == IslandMenuSurface.Search)
-            {
-                var face = IslandMenuJoin.Face(kind, actual, surface, dpi);
-                var center = surface.Left + surface.Width / 2;
-                var left = Math.Clamp(center - face.Width / 2, bar.Display.Left, bar.Display.Right - face.Width);
-                x += left - face.Left;
-            }
-            var desired = new Rectangle(x, surface.Top + Scale(18, dpi) - actual.Height, actual.Width, actual.Height);
-            _join.Apply(window, bar, surface, desired, kind, _animate ? Duration : 0, _radius);
+            // Explorer positions the shell surface before presenting it. Animate the
+            // connection on our own layer so native controls stay at their opening coordinates.
+            _join.Apply(window, bar, surface, actual, kind, _animate ? Duration : 0, _radius);
             if (_animate && !SystemInformation.HighContrast)
             {
-                var face = IslandMenuJoin.Face(kind, desired, surface, dpi);
+                var face = IslandMenuJoin.Face(kind, actual, surface, bar.Display, dpi);
                 face = Rectangle.FromLTRB(face.Left, Math.Max(face.Top, bar.Display.Top), face.Right, surface.Top + Scale(3, dpi));
-                _exit.Observe(window, desired, face, dpi, _radius, _join.MaterialColor);
+                _exit.Observe(window, actual, face, dpi, _radius, _join.MaterialColor);
             }
-
-            var firstPlacement = _target.IsEmpty;
-            if (desired != _target)
-                _placementDeadline = now + 1_500;
-            _target = desired;
-            if (firstPlacement)
-            {
-                _original = actual;
-                _started = now;
-                _travel = _animate ? Scale(14, dpi) : 0;
-                if (_travel > 0)
-                {
-                    SlideFrame();
-                    _slide.Start();
-                    return;
-                }
-            }
-            if (!_slide.Enabled && now <= _placementDeadline && desired != actual)
-                Move(desired);
-        }
-
-        private void SlideFrame()
-        {
-            if (_target.IsEmpty || !IsWindowVisible(_window) ||
-                GetWindowThreadProcessId(_window, out var process) == 0 || process != _process)
-            {
-                _slide.Stop();
-                return;
-            }
-            var elapsed = Math.Clamp((Environment.TickCount64 - _started) / (double)Duration, 0, 1);
-            var frame = _target;
-            frame.Offset(0, (int)Math.Round(_travel * Math.Pow(1 - elapsed, 2)));
-            if (_requested != frame || elapsed == 1)
-                Move(frame);
-            if (elapsed == 1) _slide.Stop();
-        }
-
-        private void Move(Rectangle frame)
-        {
-            if (SetWindowPos(_window, IntPtr.Zero, frame.X, frame.Y, 0, 0, MoveOnly))
-                _requested = frame;
         }
 
         public void Reset()
@@ -132,21 +71,15 @@ namespace SmartTaskbar
         {
             if (_window == IntPtr.Zero)
                 return;
-            _slide.Stop();
             _join.Close(animateClose && _animate);
             _exit.Close(animateClose && _animate);
-            if (!_requested.IsEmpty && GetWindowThreadProcessId(_window, out var process) != 0 && process == _process &&
-                GetWindowRect(_window, out var rect) && rect.ToRectangle() == _requested && _original != _requested)
-                SetWindowPos(_window, IntPtr.Zero, _original.X, _original.Y, 0, 0, MoveOnly);
             _window = IntPtr.Zero;
-            _requested = _target = Rectangle.Empty;
             _kind = null;
         }
 
         public void Dispose()
         {
             Reset();
-            _slide.Dispose();
             _join.Dispose();
             _exit.Dispose();
         }

@@ -17,7 +17,7 @@ internal sealed class IslandMenuJoin : NativeWindow, IDisposable
     private IntPtr _previousBitmap;
     private Bitmap? _pixels;
     private Rectangle _island, _contact, _layer;
-    private int _dpi, _radius, _anchor, _duration;
+    private int _dpi, _radius, _anchor, _duration, _gap;
     private Color _face, _tray;
     private float _amount, _from, _to;
     private long _start;
@@ -40,25 +40,29 @@ internal sealed class IslandMenuJoin : NativeWindow, IDisposable
         if (dpi <= 0)
             dpi = 96;
         var radius = Math.Clamp(radiusDip, 0, 24) * dpi / 96;
-        var menu = Face(kind, settledWrapper, island, dpi);
+        var menu = Face(kind, settledWrapper, island, bar.Display, dpi);
         var contact = Rectangle.FromLTRB(Math.Max(island.Left, menu.Left), island.Top + Scale(4, dpi),
             Math.Min(island.Right, menu.Right), island.Bottom);
-        if (contact.Width < Scale(8, dpi) || contact.Height <= 0)
+        // The transparent shadow is part of the shell HWND. Cover the space from
+        // the native panel's painted bottom to the island without moving either.
+        var gap = Math.Max(0, contact.Top - (menu.Bottom - Scale(14, dpi)));
+        if (gap > Scale(48, dpi) || contact.Width < Scale(8, dpi) || contact.Height <= 0)
         {
             Close(false);
             return;
         }
 
         _duration = Math.Clamp(durationMs, 0, 600);
-        if (window == _window && _island == island && _contact == contact && _radius == radius && _dpi == dpi)
+        if (window == _window && _island == island && _contact == contact && _radius == radius && _dpi == dpi && _gap == gap)
             return;
         var opening = window != _window || _to == 0;
         _dpi = dpi;
         _radius = radius;
         _island = island;
         _contact = contact;
+        _gap = gap;
         _window = window;
-        _layer = Rectangle.FromLTRB(island.Left, contact.Top - radius - Scale(3, dpi),
+        _layer = Rectangle.FromLTRB(island.Left, contact.Top - Math.Max(radius, gap) - Scale(3, dpi),
             island.Right, contact.Top + radius + Scale(3, dpi));
         if (!EnsureBuffer())
         {
@@ -88,7 +92,7 @@ internal sealed class IslandMenuJoin : NativeWindow, IDisposable
 
     private static int Scale(int dips, int dpi) => (dips * dpi + 48) / 96;
 
-    internal static Rectangle Face(IslandMenuSurface kind, Rectangle wrapper, Rectangle island, int dpi)
+    internal static Rectangle Face(IslandMenuSurface kind, Rectangle wrapper, Rectangle island, Rectangle display, int dpi)
     {
         var gutter = Scale(12, dpi);
         var width = kind switch
@@ -103,6 +107,10 @@ internal sealed class IslandMenuJoin : NativeWindow, IDisposable
         var x = kind switch
         {
             IslandMenuSurface.Start => IslandMenuWidth.StartFaceLeft(wrapper, island, width, dpi),
+            IslandMenuSurface.Search when island.Left - display.Left <= Scale(IslandMenuWidth.SideInset + 2, dpi) =>
+                wrapper.Left + gutter,
+            IslandMenuSurface.Search when display.Right - island.Right <= Scale(IslandMenuWidth.SideInset + 2, dpi) =>
+                wrapper.Right - gutter - width,
             IslandMenuSurface.Search => wrapper.Left + (wrapper.Width - width) / 2,
             IslandMenuSurface.QuickSettings or IslandMenuSurface.Notifications => wrapper.Right - gutter - width,
             _ => wrapper.Left + gutter
@@ -119,8 +127,9 @@ internal sealed class IslandMenuJoin : NativeWindow, IDisposable
         {
             var x = _contact.Left + _contact.Width / 2;
             _tray = Sample(dc, x, _contact.Top + Scale(4, _dpi), Fun.IsLightTheme() ? Color.FromArgb(225, 225, 225) : Color.FromArgb(33, 33, 33));
-            var hit = Fun.GetAncestor(Fun.WindowFromPhysicalPoint(new TagPoint { x = x, y = _contact.Top - Scale(8, _dpi) }), 2);
-            _face = hit == _window ? Sample(dc, x, _contact.Top - Scale(8, _dpi), _tray) : _tray;
+            var menuY = _contact.Top - _gap - Scale(4, _dpi);
+            var hit = Fun.GetAncestor(Fun.WindowFromPhysicalPoint(new TagPoint { x = x, y = menuY }), 2);
+            _face = hit == _window ? Sample(dc, x, menuY, _tray) : _tray;
         }
         finally { ReleaseDC(IntPtr.Zero, dc); }
     }
@@ -199,14 +208,15 @@ internal sealed class IslandMenuJoin : NativeWindow, IDisposable
         shape.AddLine(l - leftRadius, y + inset, l - leftRadius, y);
         if (leftRadius > 0)
             shape.AddBezier(l - leftRadius, y, l - leftRadius * .45f, y, l, y - leftRadius * .45f, l, y - leftRadius);
-        shape.AddLine(l, y - leftRadius, l, y - inset);
-        shape.AddLine(l, y - inset, r, y - inset);
-        shape.AddLine(r, y - inset, r, y - rightRadius);
+        var menuEdge = y - _gap - inset;
+        shape.AddLine(l, y - leftRadius, l, menuEdge);
+        shape.AddLine(l, menuEdge, r, menuEdge);
+        shape.AddLine(r, menuEdge, r, y - rightRadius);
         if (rightRadius > 0)
             shape.AddBezier(r, y - rightRadius, r, y - rightRadius * .45f, r + rightRadius * .45f, y, r + rightRadius, y);
         shape.AddLine(r + rightRadius, y, r + rightRadius, y + inset);
         shape.CloseFigure();
-        using var glass = new LinearGradientBrush(new Point(0, Math.Max(0, y - _radius - 1)), new Point(0, y + inset), _face, _tray);
+        using var glass = new LinearGradientBrush(new Point(0, Math.Max(0, y - Math.Max(_radius, _gap) - 1)), new Point(0, y + inset), _face, _tray);
         g.FillPath(glass, shape);
         using var trayBrush = new SolidBrush(_tray);
         if (radius > 0 && sharedLeft)
