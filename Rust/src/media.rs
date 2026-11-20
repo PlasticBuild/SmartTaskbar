@@ -1,4 +1,5 @@
 //! The media worker owns WinRT subscriptions. The desktop thread only sees snapshots.
+pub mod motion;
 mod session;
 mod widget;
 

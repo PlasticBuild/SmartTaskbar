@@ -226,6 +226,7 @@ struct Managed {
     thumbnail_hover: Option<(Rect, u64)>,
     join: Join,
     media: Widget,
+    reflow: Option<media::motion::Reflow>,
 }
 impl Managed {
     fn attach(bar: Bar, guard: &mut rescue::Monitor) -> Result<Option<Self>, String> {
@@ -264,6 +265,7 @@ impl Managed {
             thumbnail_hover: None,
             join: Join::default(),
             media: Widget::default(),
+            reflow: None,
         }))
     }
     fn thickness(bar: Bar) -> i32 {
@@ -274,11 +276,19 @@ impl Managed {
         }
     }
     fn observe(&mut self, bar: Bar, guard: &mut rescue::Monitor) -> Result<(), String> {
+        if self.reflow.as_ref().is_some_and(|motion| motion.clipped) {
+            return Ok(());
+        }
         let full = Self::thickness(bar);
         if bar.display.work == self.snap.bar.display.work {
             self.snap.displace_work();
         }
         let empty = lease::region_empty(bar);
+        // The styler temporarily clears its clip while replacing the layout.
+        // Keep the last real compact region until Explorer publishes the new one.
+        if self.reflow.is_some() && lease::current_compact(bar).is_none() {
+            return Ok(());
+        }
         if self.depth == full && empty {
             // A stale shell outline must not leave a supposedly visible desktop taskbar invisible.
             self.depth = 0;
@@ -295,6 +305,74 @@ impl Managed {
         }
         Ok(())
     }
+    fn reflow_offset(
+        &mut self,
+        allow: bool,
+        reserve: i32,
+        now: u64,
+    ) -> Result<Option<policy::Point>, String> {
+        let Some(mut motion) = self.reflow.take() else {
+            return Ok(None);
+        };
+        let full = Self::thickness(self.snap.bar);
+        let Some(face) = self.snap.compact else {
+            if motion.clipped && self.snap.owns() {
+                self.snap.apply(full, full)?;
+            } else if allow && now.saturating_sub(motion.requested_at) <= 2800 {
+                self.reflow = Some(motion);
+            }
+            return Ok(None);
+        };
+        if !allow
+            || !self.snap.owns()
+            || self.depth != full
+            || now.saturating_sub(motion.requested_at) > 2800
+            || motion
+                .started
+                .is_some_and(|start| now.saturating_sub(start) >= media::motion::DURATION)
+        {
+            if motion.clipped && self.snap.owns() {
+                self.snap.apply(full, full)?;
+            }
+            return Ok(None);
+        }
+        if motion.started.is_none() {
+            let moved =
+                (motion.from.left - face.left).abs() + (motion.from.top - face.top).abs() >= 4;
+            let ready = reserve == 0
+                || media::attached_placement(self.snap.bar.strip, face, reserve, self.snap.bar.dpi)
+                    .is_some();
+            if !moved || !ready {
+                self.reflow = Some(motion);
+                return Ok(None);
+            }
+            motion.started = Some(now);
+            if !motion.show(policy::Point {
+                x: motion.from.left,
+                y: motion.from.top,
+            }) {
+                return Ok(None);
+            }
+            self.snap.apply(0, full)?;
+            motion.clipped = true;
+            motion.release_freeze();
+        }
+        let point = media::motion::position(
+            motion.from,
+            face,
+            now.saturating_sub(motion.started.unwrap_or(now)),
+        );
+        if !motion.show(point) {
+            self.snap.apply(full, full)?;
+            return Ok(None);
+        }
+        self.reflow = Some(motion);
+        Ok(Some(policy::Point {
+            x: point.x - face.left,
+            y: point.y - face.top,
+        }))
+    }
+
     fn draw(
         &mut self,
         settings: &Settings,
@@ -410,25 +488,49 @@ impl Model {
                     .values()
                     .filter(|m| m.snap.bar.strip.edge.horizontal() == horizontal)
                     .peekable();
+                let previous = self.media_reserve.along(horizontal);
                 if matching.peek().is_some()
-                    && matching.all(|m| {
-                        let bar = m.snap.bar;
-                        let px = (length + 24) * bar.dpi as i32 / 96;
-                        m.snap.compact.is_some_and(|face| {
-                            let free = if horizontal {
-                                bar.strip.display.width() - face.width()
-                            } else {
-                                bar.strip.display.height() - face.height()
-                            };
-                            free >= px
-                        })
-                    })
+                    && (previous == direction * length
+                        || matching.all(|m| {
+                            let bar = m.snap.bar;
+                            let px = (length + 24) * bar.dpi as i32 / 96;
+                            m.snap.compact.is_some_and(|face| {
+                                let free = if horizontal {
+                                    bar.strip.display.width() - face.width()
+                                } else {
+                                    bar.strip.display.height() - face.height()
+                                };
+                                free >= px
+                            })
+                        }))
                 {
                     *target = direction * length;
                 }
             }
         }
         if reserve != self.media_reserve {
+            if settings.animate {
+                for managed in self.managed.values_mut() {
+                    let bar = managed.snap.bar;
+                    let horizontal = bar.strip.edge.horizontal();
+                    if reserve.along(horizontal) != self.media_reserve.along(horizontal)
+                        && managed.reflow.is_none()
+                        && managed.depth == Managed::thickness(bar)
+                        && let Some(face) = managed.snap.compact
+                    {
+                        let radius = i32::from(settings.radius) * bar.dpi as i32 / 48;
+                        let expected = media::motion::expected_face(
+                            bar.strip,
+                            face,
+                            reserve.along(horizontal),
+                            bar.dpi,
+                            settings.alignment,
+                        );
+                        managed.reflow =
+                            media::motion::Reflow::capture(bar.hwnd, face, expected, radius, now);
+                    }
+                }
+            }
             self.reserve_changed_at = now;
             self.media_reserve = reserve;
         }
@@ -494,6 +596,11 @@ impl Model {
                     menu || media_hold,
                 )
             });
+            let offset = m.reflow_offset(
+                visible && !menu && settings.animate && pointer.is_some(),
+                reserve.along(bar.edge.horizontal()),
+                now,
+            )?;
             let animating = m.draw(
                 settings,
                 visible,
@@ -537,13 +644,25 @@ impl Model {
                 if track.is_some() {
                     delay = delay.min(500);
                 }
-                m.media
-                    .update(place, (worker, track.clone()), surface.dpi, settings, now)
+                let animating = m.media.update(
+                    offset.map_or(place, |delta| place.offset(delta)),
+                    (worker, track.clone()),
+                    surface.dpi,
+                    settings,
+                    now,
+                );
+                if let Some(point) = cursor
+                    && track.is_some()
+                    && m.media.hover_details(bar, point, settings.animate, now)
+                {
+                    delay = delay.min(35);
+                }
+                animating
             } else {
                 m.media.clear(now);
                 false
             };
-            if animating || bridge || media_frame {
+            if animating || bridge || media_frame || offset.is_some() {
                 delay = 16
             } else if covered {
                 delay = delay.min(32)
@@ -652,7 +771,12 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
         }
         if now >= next_sync {
             model.sync(&mut guard)?;
-            next_sync = now + 850;
+            next_sync = now
+                + if model.managed.values().any(|m| m.reflow.is_some()) {
+                    27
+                } else {
+                    850
+                };
             publish = true;
         }
         if now >= next_scene
@@ -670,6 +794,9 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
         }
         let before = model.media_reserve;
         let mut delay = model.update(&settings, now)?;
+        if before != model.media_reserve && settings.animate {
+            next_sync = now;
+        }
         if publish || before != model.media_reserve {
             model.publish(&settings)
         }

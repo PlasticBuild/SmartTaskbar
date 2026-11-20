@@ -76,6 +76,16 @@ pub fn attached_placement(
 }
 
 impl Placement {
+    pub fn offset(mut self, offset: Point) -> Self {
+        let r = self.bounds;
+        self.bounds = Rect::new(
+            r.left + offset.x,
+            r.top + offset.y,
+            r.right + offset.x,
+            r.bottom + offset.y,
+        );
+        self
+    }
     fn length(self) -> i32 {
         if self.vertical {
             self.bounds.height()
@@ -211,6 +221,22 @@ struct Layout {
 }
 
 impl Layout {
+    fn details(w: i32, h: i32, dpi: u32) -> Self {
+        let px = |n: i32| n * dpi as i32 / 96;
+        let button = px(44).min(w / 5);
+        let x = (w - button * 3) / 2;
+        let top = px(51);
+        Self {
+            label: Rect::new(px(16), px(12), w - px(16), top),
+            buttons: std::array::from_fn(|i| {
+                let x = x + button * i as i32;
+                Rect::new(x, top, x + button, top + button)
+            }),
+            scrub: Rect::new(px(16), top + button + px(6), w - px(16), h - px(25)),
+            vertical: false,
+        }
+    }
+
     fn new(w: i32, h: i32, dpi: u32) -> Self {
         let px = |n: i32| n * dpi as i32 / 96;
         let gap = px(6);
@@ -257,7 +283,7 @@ impl Layout {
     }
 }
 
-type Controller = Box<dyn Fn(u64, Action)>;
+type Controller = std::rc::Rc<dyn Fn(u64, Action)>;
 struct Drag {
     generation: u64,
     timeline: Timeline,
@@ -270,6 +296,7 @@ struct Ui {
     light: bool,
     drag: Option<Drag>,
     hover: Option<usize>,
+    expanded: bool,
 }
 
 impl Ui {
@@ -281,6 +308,34 @@ impl Ui {
             light: false,
             drag: None,
             hover: None,
+            expanded: false,
+        }
+    }
+
+    fn layout(&self, width: i32, height: i32) -> Layout {
+        if self.expanded {
+            Layout::details(width, height, self.dpi)
+        } else {
+            Layout::new(width, height, self.dpi)
+        }
+    }
+}
+
+struct Details {
+    hwnd: HWND,
+    ui: Box<Ui>,
+    bounds: Rect,
+    shown_at: u64,
+    alpha: u8,
+}
+
+impl Drop for Details {
+    fn drop(&mut self) {
+        unsafe {
+            if GetCapture() == self.hwnd {
+                ReleaseCapture();
+            }
+            DestroyWindow(self.hwnd);
         }
     }
 }
@@ -291,6 +346,9 @@ pub struct Widget {
     slide: Slide,
     frame: Option<(Placement, i32, u8, i32)>,
     draw_at: u64,
+    details: Option<Details>,
+    hover_at: Option<u64>,
+    details_until: u64,
 }
 
 impl Default for Widget {
@@ -303,6 +361,9 @@ impl Default for Widget {
             slide,
             frame: None,
             draw_at: 0,
+            details: None,
+            hover_at: None,
+            details_until: 0,
         }
     }
 }
@@ -313,6 +374,13 @@ impl Widget {
     }
 
     pub fn holds(&self, pointer: Point) -> bool {
+        if self
+            .details
+            .as_ref()
+            .is_some_and(|detail| detail.bounds.contains(pointer))
+        {
+            return true;
+        }
         self.frame.is_some_and(|(place, span, _, _)| {
             span == place.length()
                 && place.bounds.contains(pointer)
@@ -329,6 +397,7 @@ impl Widget {
     }
 
     pub fn clear(&mut self, now: u64) {
+        self.close_details();
         if !self.hwnd.is_null() {
             if unsafe { GetCapture() == self.hwnd } {
                 unsafe { ReleaseCapture() };
@@ -339,6 +408,121 @@ impl Widget {
         }
         self.frame = None;
         self.slide.update(false, now, 0);
+    }
+
+    fn close_details(&mut self) {
+        self.details = None;
+        self.hover_at = None;
+        self.details_until = 0;
+    }
+
+    pub fn hover_details(
+        &mut self,
+        bar: NativeBar,
+        pointer: Point,
+        animate: bool,
+        now: u64,
+    ) -> bool {
+        let Some((compact, span, _, _)) = self.frame else {
+            self.close_details();
+            return false;
+        };
+        let Some(ui) = &self.ui else { return false };
+        let Some(track) = ui.track.clone() else {
+            return false;
+        };
+        let over_player =
+            span == compact.length() && compact.bounds.contains(pointer) && self.holds(pointer);
+        if over_player {
+            self.hover_at.get_or_insert(now);
+        } else {
+            self.hover_at = None;
+        }
+        let Some(bounds) = detail_bounds(bar, compact.bounds, ui.dpi) else {
+            self.close_details();
+            return false;
+        };
+        if let Some(detail) = &mut self.details {
+            if detail.bounds != bounds {
+                self.close_details();
+                return false;
+            }
+            let in_panel = bounds.contains(pointer) || unsafe { GetCapture() == detail.hwnd };
+            if over_player || in_panel {
+                self.details_until = now.saturating_add(280);
+            }
+            if now > self.details_until {
+                self.close_details();
+                return false;
+            }
+            if detail
+                .ui
+                .drag
+                .as_ref()
+                .is_some_and(|drag| drag.generation != track.generation)
+            {
+                detail.ui.drag = None;
+            }
+            detail.ui.track = Some(track);
+            detail.ui.light = ui.light;
+            let alpha = if animate {
+                (now.saturating_sub(detail.shown_at) * 255 / 145).min(255) as u8
+            } else {
+                255
+            };
+            if alpha != detail.alpha {
+                unsafe {
+                    SetLayeredWindowAttributes(detail.hwnd, 0, alpha, LWA_ALPHA);
+                }
+                detail.alpha = alpha;
+            }
+            // The seek position continues to advance while the details are open.
+            unsafe {
+                InvalidateRect(detail.hwnd, null(), 0);
+            }
+            return true;
+        }
+        let Some(since) = self.hover_at else {
+            return false;
+        };
+        if now.saturating_sub(since) < 300 {
+            return true;
+        }
+        let mut expanded = Box::new(Ui::new(ui.control.clone()));
+        expanded.expanded = true;
+        expanded.dpi = ui.dpi;
+        expanded.light = ui.light;
+        expanded.track = Some(track);
+        let hwnd = create(&mut expanded);
+        if hwnd.is_null() {
+            return false;
+        }
+        let alpha = if animate { 1 } else { 255 };
+        let radius = ui.dpi as i32 * 24 / 96;
+        let details = Details {
+            hwnd,
+            ui: expanded,
+            bounds,
+            shown_at: now,
+            alpha,
+        };
+        if !place(
+            hwnd,
+            Placement {
+                bounds,
+                vertical: false,
+                from_end: false,
+                attached: false,
+            },
+            bounds.width(),
+            alpha,
+            radius,
+        ) {
+            return false;
+        }
+        self.details_until = now.saturating_add(280);
+        self.details = Some(details);
+        true
     }
 
     pub fn update(
@@ -354,7 +538,7 @@ impl Widget {
             if track.is_none() {
                 return false;
             }
-            let mut ui = Box::new(Ui::new(Box::new(worker.controller())));
+            let mut ui = Box::new(Ui::new(std::rc::Rc::new(worker.controller())));
             self.hwnd = create(&mut ui);
             if self.hwnd.is_null() {
                 return false;
@@ -362,9 +546,18 @@ impl Widget {
             self.ui = Some(ui);
         }
         let opening = track.is_some();
-        let fraction = self
-            .slide
-            .update(opening, now, if settings.animate { 185 } else { 0 });
+        if !opening {
+            self.close_details();
+        }
+        let fraction = self.slide.update(
+            opening,
+            now,
+            if settings.animate {
+                super::motion::DURATION
+            } else {
+                0
+            },
+        );
         let length = target.length();
         let span = (f64::from(length) * fraction).round() as i32;
         if span == 0 {
@@ -425,6 +618,29 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
+fn detail_bounds(bar: NativeBar, player: Rect, dpi: u32) -> Option<Rect> {
+    let d = bar.display;
+    let px = |n: i32| n * dpi as i32 / 96;
+    let gap = px(7);
+    let width = px(312).min(d.width() - gap * 2);
+    let height = px(144);
+    if width < px(215) || d.height() < height + gap * 2 {
+        return None;
+    }
+    let centered_x =
+        (player.left + (player.width() - width) / 2).clamp(d.left + gap, d.right - width - gap);
+    let centered_y =
+        (player.top + (player.height() - height) / 2).clamp(d.top + gap, d.bottom - height - gap);
+    let (x, y) = match bar.edge {
+        Edge::Left => (player.right + gap, centered_y),
+        Edge::Right => (player.left - gap - width, centered_y),
+        Edge::Top => (centered_x, player.bottom + gap),
+        Edge::Bottom => (centered_x, player.top - gap - height),
+    };
+    let bounds = Rect::new(x, y, x + width, y + height);
+    (bounds.intersection(d) == Some(bounds)).then_some(bounds)
+}
+
 fn create(ui: &mut Ui) -> HWND {
     static CLASS: OnceLock<u16> = OnceLock::new();
     let instance = unsafe { GetModuleHandleW(null()) };
@@ -447,7 +663,12 @@ fn create(ui: &mut Ui) -> HWND {
         CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
             class as usize as *const u16,
-            wide("Taskbar media player").as_ptr(),
+            wide(if ui.expanded {
+                "Taskbar media details"
+            } else {
+                "Taskbar media player"
+            })
+            .as_ptr(),
             WS_POPUP,
             0,
             0,
@@ -543,7 +764,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_LBUTTONDOWN => {
                 let ui = unsafe { &mut *state };
-                let layout = client_layout(hwnd, ui.dpi);
+                let layout = client_layout(hwnd, ui);
                 if let Some(track) = &ui.track {
                     if layout.scrub.contains(pos)
                         && track.can_seek
@@ -575,7 +796,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_MOUSEMOVE => {
                 let ui = unsafe { &mut *state };
-                let layout = client_layout(hwnd, ui.dpi);
+                let layout = client_layout(hwnd, ui);
                 let hover = layout.buttons.iter().position(|r| r.contains(pos));
                 if hover != ui.hover {
                     ui.hover = hover;
@@ -606,7 +827,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_LBUTTONUP => {
                 let ui = unsafe { &mut *state };
                 if let Some(drag) = ui.drag.take() {
-                    let fraction = client_layout(hwnd, ui.dpi).scrub_fraction(pos);
+                    let fraction = client_layout(hwnd, ui).scrub_fraction(pos);
                     (ui.control)(drag.generation, Action::Seek(drag.timeline.at(fraction)));
                 }
                 if unsafe { GetCapture() == hwnd } {
@@ -628,10 +849,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
-fn client_layout(hwnd: HWND, dpi: u32) -> Layout {
+fn client_layout(hwnd: HWND, ui: &Ui) -> Layout {
     let mut r = RECT::default();
     unsafe { GetClientRect(hwnd, &mut r) };
-    Layout::new(r.right, r.bottom, dpi)
+    ui.layout(r.right, r.bottom)
 }
 
 fn light_theme() -> bool {
@@ -824,7 +1045,7 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
     };
     fill(dc, Rect::new(0, 0, w, h), base);
     let Some(track) = &ui.track else { return };
-    let layout = Layout::new(w, h, ui.dpi);
+    let layout = ui.layout(w, h);
     if let Some(art) = &track.details.art {
         artwork(dc, Rect::new(0, 0, w, h), art);
     }
@@ -846,7 +1067,7 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
             wide("Segoe UI").as_ptr(),
         )
     };
-    let regular = font(12);
+    let regular = font(if ui.expanded { 15 } else { 12 });
     unsafe { SetBkMode(dc, TRANSPARENT as i32) };
     let previous = unsafe { SelectObject(dc, regular) };
     let title = if track.details.title.is_empty() {
@@ -932,6 +1153,26 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
         if track.can_seek {
             fill(dc, knob, accent);
         }
+        if ui.expanded {
+            let px = |value| value * ui.dpi as i32 / 96;
+            let elapsed = (timeline.at(fraction) - timeline.first) / 10_000_000;
+            let total = (timeline.last - timeline.first) / 10_000_000;
+            let small = font(11);
+            unsafe { SelectObject(dc, small) };
+            for (seconds, align) in [(elapsed, DT_LEFT), (total, DT_RIGHT)] {
+                text(
+                    dc,
+                    &format!("{}:{:02}", seconds / 60, seconds % 60),
+                    Rect::new(px(16), layout.scrub.bottom + px(2), w - px(16), h - px(5)),
+                    secondary,
+                    align | DT_VCENTER,
+                );
+            }
+            unsafe {
+                SelectObject(dc, regular);
+                DeleteObject(small);
+            }
+        }
     }
     unsafe {
         SelectObject(dc, previous);
@@ -941,11 +1182,29 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn details_open_inward_and_leave_space_for_the_larger_transport_and_seek_bar() {
+        let display = Rect::new(-1600, -1000, 0, 0);
+        let strip = Rect::new(-48, -1000, 0, 0);
+        let bar = NativeBar {
+            edge: Edge::Right,
+            display,
+            bounds: strip,
+        };
+        let compact = Rect::new(-42, -440, -6, -296);
+        let panel = detail_bounds(bar, compact, 96).unwrap();
+        assert!(panel.right < compact.left);
+        assert_eq!(panel.intersection(display), Some(panel));
+        let layout = Layout::details(panel.width(), panel.height(), 96);
+        assert_eq!(layout.buttons[1].height(), 44);
+        assert!(layout.scrub.top > layout.buttons[1].bottom);
+        assert!(layout.scrub.width() > 200);
+    }
     use super::*;
 
     #[test]
     fn the_player_paints_artwork_and_progress_into_a_windows_bitmap() {
-        let mut ui = Ui::new(Box::new(|_, _| {}));
+        let mut ui = Ui::new(std::rc::Rc::new(|_, _| {}));
         ui.track = Some(Arc::new(Track {
             generation: 1,
             details: Arc::new(super::super::Metadata {
