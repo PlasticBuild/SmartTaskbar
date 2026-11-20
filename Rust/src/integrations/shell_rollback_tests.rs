@@ -116,7 +116,7 @@ fn committed_but_failed_cli_writes_restore_the_original_snapshot_and_can_retry()
     let second = IDS[1];
     fs::write(path.join("fail-after-commit"), second).unwrap();
     assert!(
-        host.apply(&Settings::default(), None)
+        host.apply(&Settings::default(), None, Default::default())
             .unwrap_err()
             .contains("fixture failure after commit")
     );

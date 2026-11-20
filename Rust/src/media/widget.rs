@@ -13,7 +13,10 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::{LibraryLoader::GetModuleHandleW, Registry::*},
     UI::{
-        Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture},
+        Controls::WM_MOUSELEAVE,
+        Input::KeyboardAndMouse::{
+            GetCapture, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+        },
         WindowsAndMessaging::*,
     },
 };
@@ -23,6 +26,53 @@ pub struct Placement {
     pub bounds: Rect,
     vertical: bool,
     from_end: bool,
+    attached: bool,
+}
+
+pub fn attached_placement(
+    bar: NativeBar,
+    face: Rect,
+    reserved: i32,
+    dpi: u32,
+) -> Option<Placement> {
+    let vertical = !bar.edge.horizontal();
+    let from_end = reserved > 0;
+    let length = reserved.abs() * dpi as i32 / 96;
+    let inset = (3 * dpi as i32 / 96).max(1);
+    let bounds = if vertical {
+        let y = if from_end {
+            face.top - length
+        } else {
+            face.bottom
+        };
+        Rect::new(face.left + inset, y, face.right - inset, y + length)
+    } else {
+        let x = if from_end {
+            face.left - length
+        } else {
+            face.right
+        };
+        Rect::new(x, face.top + inset, x + length, face.bottom - inset)
+    };
+    let center_delta = if vertical {
+        bounds.top.min(face.top) + bounds.bottom.max(face.bottom)
+            - bar.display.top
+            - bar.display.bottom
+    } else {
+        bounds.left.min(face.left) + bounds.right.max(face.right)
+            - bar.display.left
+            - bar.display.right
+    };
+    // Let Explorer's matching click-through region settle before revealing the controls.
+    (length > 0
+        && bounds.intersection(bar.display) == Some(bounds)
+        && center_delta.abs() <= inset * 10)
+        .then_some(Placement {
+            bounds,
+            vertical,
+            from_end,
+            attached: true,
+        })
 }
 
 impl Placement {
@@ -91,6 +141,7 @@ pub fn placement(
             bounds,
             vertical: true,
             from_end: low,
+            attached: false,
         });
     }
     let width = px(270).min(display.width() - gap * 2);
@@ -119,6 +170,7 @@ pub fn placement(
                 bounds: Rect::new(x, y, x + inline, y + height),
                 vertical: false,
                 from_end: low,
+                attached: false,
             });
         }
     }
@@ -146,6 +198,7 @@ pub fn placement(
         bounds,
         vertical: false,
         from_end: low,
+        attached: false,
     })
 }
 
@@ -162,16 +215,21 @@ impl Layout {
         let px = |n: i32| n * dpi as i32 / 96;
         let gap = px(6);
         if h > w {
-            let button_h = px(27).min((h - gap * 2) / 3);
-            let start = (h - button_h * 3) / 2;
+            let button_h = px(29).min((h - gap * 4) / 4);
+            let start = gap;
             let buttons = std::array::from_fn(|i| {
                 let y = start + i as i32 * button_h;
-                Rect::new(0, y, w - px(12), y + button_h)
+                Rect::new(gap, y, w - gap, y + button_h)
             });
             return Self {
                 label: Rect::default(),
                 buttons,
-                scrub: Rect::new(w - px(12), gap, w - px(2), h - gap),
+                scrub: Rect::new(
+                    w / 2 - px(9),
+                    buttons[2].bottom + gap,
+                    w / 2 + px(9),
+                    h - gap,
+                ),
                 vertical: true,
             };
         }
@@ -211,6 +269,7 @@ struct Ui {
     dpi: u32,
     light: bool,
     drag: Option<Drag>,
+    hover: Option<usize>,
 }
 
 impl Ui {
@@ -221,6 +280,7 @@ impl Ui {
             dpi: 96,
             light: false,
             drag: None,
+            hover: None,
         }
     }
 }
@@ -248,6 +308,10 @@ impl Default for Widget {
 }
 
 impl Widget {
+    pub fn is_visible(&self) -> bool {
+        self.frame.is_some()
+    }
+
     pub fn holds(&self, pointer: Point) -> bool {
         self.frame.is_some_and(|(place, span, _, _)| {
             span == place.length()
@@ -408,6 +472,18 @@ fn place(hwnd: HWND, placement: Placement, span: i32, alpha: u8, radius: i32) ->
         if rounded.is_null() {
             return false;
         }
+        if placement.attached {
+            let seam = match (placement.vertical, placement.from_end) {
+                (true, true) => CreateRectRgn(0, r.height() / 2, r.width() + 1, r.height() + 1),
+                (true, false) => CreateRectRgn(0, 0, r.width() + 1, r.height() / 2),
+                (false, true) => CreateRectRgn(r.width() / 2, 0, r.width() + 1, r.height() + 1),
+                (false, false) => CreateRectRgn(0, 0, r.width() / 2, r.height() + 1),
+            };
+            if !seam.is_null() {
+                CombineRgn(rounded, rounded, seam, RGN_OR);
+                DeleteObject(seam);
+            }
+        }
         if span < placement.length() {
             let offset = if placement.from_end {
                 placement.length() - span
@@ -499,9 +575,31 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_MOUSEMOVE => {
                 let ui = unsafe { &mut *state };
+                let layout = client_layout(hwnd, ui.dpi);
+                let hover = layout.buttons.iter().position(|r| r.contains(pos));
+                if hover != ui.hover {
+                    ui.hover = hover;
+                    let mut tracking = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    unsafe {
+                        TrackMouseEvent(&mut tracking);
+                        InvalidateRect(hwnd, null(), 0);
+                    }
+                }
                 if let Some(drag) = &mut ui.drag {
-                    drag.fraction = client_layout(hwnd, ui.dpi).scrub_fraction(pos);
+                    drag.fraction = layout.scrub_fraction(pos);
                     unsafe { InvalidateRect(hwnd, null(), 0) };
+                }
+                return 0;
+            }
+            WM_MOUSELEAVE => {
+                unsafe {
+                    (*state).hover = None;
+                    InvalidateRect(hwnd, null(), 0);
                 }
                 return 0;
             }
@@ -625,6 +723,71 @@ fn artwork(dc: HDC, r: Rect, art: &Art) {
     }
 }
 
+fn transport(
+    dc: HDC,
+    rect: Rect,
+    button: usize,
+    playing: bool,
+    color: COLORREF,
+    surface: COLORREF,
+    highlighted: bool,
+) {
+    let x = rect.left + rect.width() / 2;
+    let y = rect.top + rect.height() / 2;
+    let radius = (rect.width().min(rect.height()) / 2 - 2).max(4);
+    let unit = (radius / 3).max(1);
+    unsafe {
+        let pen = SelectObject(dc, GetStockObject(NULL_PEN));
+        let brush = SelectObject(dc, GetStockObject(DC_BRUSH));
+        if highlighted || button == 1 {
+            SetDCBrushColor(dc, if button == 1 { color } else { surface });
+            Ellipse(dc, x - radius, y - radius, x + radius, y + radius);
+        }
+        let ink = if button == 1 { surface } else { color };
+        SetDCBrushColor(dc, ink);
+        if button == 1 && playing {
+            fill(
+                dc,
+                Rect::new(x - unit - 1, y - unit - 1, x - 1, y + unit + 1),
+                ink,
+            );
+            fill(
+                dc,
+                Rect::new(x + 1, y - unit - 1, x + unit + 1, y + unit + 1),
+                ink,
+            );
+        } else {
+            let dir = if button == 0 { -1 } else { 1 };
+            let shift = if button == 1 { 1 } else { 0 };
+            let triangle = [
+                POINT {
+                    x: x + shift - dir * unit,
+                    y: y - unit - 1,
+                },
+                POINT {
+                    x: x + shift + dir * (unit + 1),
+                    y,
+                },
+                POINT {
+                    x: x + shift - dir * unit,
+                    y: y + unit + 1,
+                },
+            ];
+            Polygon(dc, triangle.as_ptr(), 3);
+            if button != 1 {
+                let line = x + dir * (unit + 2);
+                fill(
+                    dc,
+                    Rect::new(line - 1, y - unit - 1, line + 1, y + unit + 1),
+                    ink,
+                );
+            }
+        }
+        SelectObject(dc, brush);
+        SelectObject(dc, pen);
+    }
+}
+
 fn paint(hwnd: HWND, ui: &Ui) {
     unsafe {
         let mut painting = PAINTSTRUCT::default();
@@ -684,7 +847,6 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
         )
     };
     let regular = font(12);
-    let icons = font(17);
     unsafe { SetBkMode(dc, TRANSPARENT as i32) };
     let previous = unsafe { SelectObject(dc, regular) };
     let title = if track.details.title.is_empty() {
@@ -704,19 +866,20 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
         text(dc, title, first, main, DT_VCENTER);
         text(dc, &track.details.artist, second, secondary, DT_VCENTER);
     }
-    unsafe { SelectObject(dc, icons) };
-    for ((rect, enabled), glyph) in layout
+    for (index, (rect, enabled)) in layout
         .buttons
         .into_iter()
         .zip([track.previous, track.toggle, track.next])
-        .zip(["⏮", if track.playing { "Ⅱ" } else { "▶" }, "⏭"])
+        .enumerate()
     {
-        text(
+        transport(
             dc,
-            glyph,
             rect,
+            index,
+            track.playing,
             if enabled { main } else { secondary },
-            DT_CENTER | DT_VCENTER,
+            base,
+            enabled && ui.hover == Some(index),
         );
     }
     let weight = (2 * ui.dpi as i32 / 96).max(1);
@@ -773,7 +936,6 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
     unsafe {
         SelectObject(dc, previous);
         DeleteObject(regular);
-        DeleteObject(icons);
     }
 }
 
@@ -936,5 +1098,37 @@ mod tests {
             }),
             0.0
         );
+    }
+}
+#[test]
+fn an_attached_player_shares_the_edge_of_a_centered_group() {
+    for (edge, strip, face, reserve) in [
+        (
+            Edge::Right,
+            Rect::new(1872, 0, 1920, 1000),
+            Rect::new(1872, 178, 1920, 678),
+            -144,
+        ),
+        (
+            Edge::Bottom,
+            Rect::new(0, 952, 1920, 1000),
+            Rect::new(670, 952, 1470, 1000),
+            220,
+        ),
+    ] {
+        let bar = NativeBar {
+            edge,
+            display: Rect::new(0, 0, 1920, 1000),
+            bounds: strip,
+        };
+        let player = attached_placement(bar, face, reserve, 96).unwrap();
+        assert!(player.attached);
+        if edge.horizontal() {
+            assert_eq!(player.bounds.right, face.left);
+            assert_eq!(player.bounds.left + face.right, 1920);
+        } else {
+            assert_eq!(player.bounds.top, face.bottom);
+            assert_eq!(face.top + player.bounds.bottom, 1000);
+        }
     }
 }

@@ -94,7 +94,6 @@ struct Active {
     metadata_event: Option<i64>,
     timeline_event: Option<i64>,
     details: Arc<Metadata>,
-    paused_at: Option<Instant>,
 }
 
 impl Active {
@@ -119,7 +118,6 @@ impl Active {
             metadata_event,
             timeline_event,
             details,
-            paused_at: None,
         }
     }
 }
@@ -209,6 +207,12 @@ impl Sessions {
                 let info = active.session.GetPlaybackInfo().ok()?;
                 (info.PlaybackStatus().ok() == Some(Status::Paused))
                     .then(|| (active.session.clone(), info))
+            })
+            .or_else(|| {
+                let current = current.as_ref()?;
+                let info = current.GetPlaybackInfo().ok()?;
+                (info.PlaybackStatus().ok() == Some(Status::Paused))
+                    .then(|| (current.clone(), info))
             });
         let Some((session, info)) = selected else {
             self.active = None;
@@ -224,14 +228,6 @@ impl Sessions {
 
         let active = self.active.as_mut()?;
         let playing = info.PlaybackStatus().ok() == Some(Status::Playing);
-        if playing {
-            active.paused_at = None;
-        } else if active.paused_at.get_or_insert_with(Instant::now).elapsed()
-            >= Duration::from_secs(8)
-        {
-            self.active = None;
-            return None;
-        }
         let controls = info.Controls().ok();
         let allowed = |get: fn(
             &windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackControls,

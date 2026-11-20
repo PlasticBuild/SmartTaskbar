@@ -378,12 +378,17 @@ impl Host {
         }
         Ok(())
     }
-    pub fn apply(&mut self, settings: &Settings, geometry: Geometry) -> Result<bool, String> {
+    pub fn apply(
+        &mut self,
+        settings: &Settings,
+        geometry: Geometry,
+        reserve: crate::media::Reserve,
+    ) -> Result<bool, String> {
         if super::menu_open() {
             return Ok(false);
         }
         self.ensure_running()?;
-        let profiles = profiles::build(settings, geometry)?;
+        let profiles = profiles::build_with_reserve(settings, geometry, reserve)?;
         for (index, item) in profiles.iter().enumerate() {
             if super::menu_open() {
                 return Ok(false);

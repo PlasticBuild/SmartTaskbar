@@ -223,6 +223,7 @@ struct Managed {
     menu: Option<usize>,
     context: Option<usize>,
     last_face: Option<u64>,
+    thumbnail_hover: Option<(Rect, u64)>,
     join: Join,
     media: Widget,
 }
@@ -260,6 +261,7 @@ impl Managed {
             menu: None,
             context: None,
             last_face: None,
+            thumbnail_hover: None,
             join: Join::default(),
             media: Widget::default(),
         }))
@@ -337,6 +339,8 @@ struct Model {
     names: native::ProcessNames,
     shell: u32,
     media: Option<Worker>,
+    media_reserve: media::Reserve,
+    reserve_changed_at: u64,
 }
 impl Model {
     fn sync(&mut self, guard: &mut rescue::Monitor) -> Result<(), String> {
@@ -387,6 +391,47 @@ impl Model {
             self.media = None;
         }
         let track = self.media.as_ref().and_then(Worker::snapshot);
+        let mut reserve = media::Reserve::default();
+        if settings.island
+            && settings.media_player
+            && (track.is_some() || self.managed.values().any(|m| m.media.is_visible()))
+        {
+            let direction = if settings.media_side == crate::settings::MediaSide::Left {
+                1
+            } else {
+                -1
+            };
+            for (horizontal, length, target) in [
+                (true, media::HORIZONTAL_DIPS, &mut reserve.horizontal),
+                (false, media::VERTICAL_DIPS, &mut reserve.vertical),
+            ] {
+                let mut matching = self
+                    .managed
+                    .values()
+                    .filter(|m| m.snap.bar.strip.edge.horizontal() == horizontal)
+                    .peekable();
+                if matching.peek().is_some()
+                    && matching.all(|m| {
+                        let bar = m.snap.bar;
+                        let px = (length + 24) * bar.dpi as i32 / 96;
+                        m.snap.compact.is_some_and(|face| {
+                            let free = if horizontal {
+                                bar.strip.display.width() - face.width()
+                            } else {
+                                bar.strip.display.height() - face.height()
+                            };
+                            free >= px
+                        })
+                    })
+                {
+                    *target = direction * length;
+                }
+            }
+        }
+        if reserve != self.media_reserve {
+            self.reserve_changed_at = now;
+            self.media_reserve = reserve;
+        }
         for m in self.managed.values_mut() {
             let bar = m.snap.bar.strip;
             let face = if settings.island {
@@ -401,8 +446,18 @@ impl Model {
                 .iter()
                 .find(|p| p.monitor == bar.display)
                 .copied();
+            let thumbnail_held = cursor.is_some_and(|point| {
+                grouped_thumbnail_hold(
+                    bar.display,
+                    &self.scene.thumbnail_groups,
+                    point,
+                    now,
+                    &mut m.thumbnail_hover,
+                )
+            });
             let shell_menu = panel.is_some()
                 || self.scene.menus.contains(&bar.display)
+                || thumbnail_held
                 || thumbnail == Some(bar.display);
             let under_cursor = cursor.is_some_and(|p| face.unwrap_or(bar.bounds).contains(p));
             if (m.depth > 0 && under_cursor) || shell_menu || m.menu.is_some() {
@@ -459,9 +514,25 @@ impl Model {
             let media_frame = if let Some(worker) = &self.media
                 && visible
                 && cursor.is_some()
-                && !menu
                 && m.depth == Managed::thickness(m.snap.bar)
-                && let Some(place) = media::placement(bar, face, settings.media_side, surface.dpi)
+                && let Some(place) = {
+                    let reserved = reserve.along(bar.edge.horizontal());
+                    if reserved == 0 {
+                        media::placement(bar, face, settings.media_side, surface.dpi)
+                    } else {
+                        face.and_then(|face| {
+                            media::attached_placement(bar, face, reserved, surface.dpi)
+                        })
+                        .or_else(|| {
+                            (now.saturating_sub(self.reserve_changed_at) >= 1800)
+                                .then(|| {
+                                    media::placement(bar, face, settings.media_side, surface.dpi)
+                                })
+                                .flatten()
+                        })
+                    }
+                }
+                && panel.is_none_or(|panel| panel.bounds.intersection(place.bounds).is_none())
             {
                 if track.is_some() {
                     delay = delay.min(500);
@@ -495,8 +566,30 @@ impl Model {
             !self.scene.menus.is_empty()
                 || !self.scene.panels.is_empty()
                 || self.managed.values().any(|m| m.context.is_some()),
+            self.media_reserve,
         );
     }
+}
+
+fn grouped_thumbnail_hold(
+    display: Rect,
+    groups: &[(Rect, Rect)],
+    pointer: policy::Point,
+    now: u64,
+    hold: &mut Option<(Rect, u64)>,
+) -> bool {
+    if let Some((_, bounds)) = groups
+        .iter()
+        .find(|(owner, bounds)| *owner == display && bounds.contains(pointer))
+    {
+        *hold = Some((*bounds, now.saturating_add(550)));
+        return true;
+    }
+    if hold.is_some_and(|(bounds, deadline)| now <= deadline && bounds.contains(pointer)) {
+        return true;
+    }
+    *hold = None;
+    false
 }
 
 fn related_context(
@@ -575,8 +668,9 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
             next_scene = now + 1200;
             publish = true;
         }
+        let before = model.media_reserve;
         let mut delay = model.update(&settings, now)?;
-        if publish {
+        if publish || before != model.media_reserve {
             model.publish(&settings)
         }
         for due in [next_sync, next_scene, next_config] {
@@ -634,4 +728,39 @@ mod tests {
         let face = Some(Rect::new(-350, 1712, -2, 1796));
         assert_eq!(layout(bar(720, 192, 1800), face), Some((360, 0, 30)));
     }
+}
+#[test]
+fn moving_between_preview_cells_survives_a_popup_handoff() {
+    let monitor = Rect::new(0, 0, 1800, 1000);
+    let other = Rect::new(0, -1000, 1800, 0);
+    let thumbnails = [(monitor, Rect::new(400, 650, 1000, 850))];
+    let mut hold = None;
+    assert!(grouped_thumbnail_hold(
+        monitor,
+        &thumbnails,
+        policy::Point { x: 450, y: 720 },
+        1,
+        &mut hold
+    ));
+    assert!(grouped_thumbnail_hold(
+        monitor,
+        &[],
+        policy::Point { x: 825, y: 720 },
+        280,
+        &mut hold
+    ));
+    assert!(!grouped_thumbnail_hold(
+        monitor,
+        &[],
+        policy::Point { x: 825, y: 720 },
+        600,
+        &mut hold
+    ));
+    assert!(!grouped_thumbnail_hold(
+        other,
+        &thumbnails,
+        policy::Point { x: 450, y: 720 },
+        601,
+        &mut hold
+    ));
 }

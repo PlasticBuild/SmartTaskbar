@@ -20,7 +20,7 @@ mod search;
 mod shell;
 
 pub type Geometry = Option<(i32, i32, i32)>;
-type Layout = (Geometry, bool);
+type Layout = (Geometry, bool, crate::media::Reserve);
 enum Update {
     Desktop(Layout),
     Stop,
@@ -33,11 +33,11 @@ fn menu_open() -> bool {
         .lock()
         .ok()
         .and_then(|state| *state)
-        .is_some_and(|(_, open)| open)
+        .is_some_and(|(_, open, _)| open)
 }
 
-pub fn layout_changed(geometry: Geometry, flyout_open: bool) {
-    let next = (geometry, flyout_open);
+pub fn layout_changed(geometry: Geometry, flyout_open: bool, reserve: crate::media::Reserve) {
+    let next = (geometry, flyout_open, reserve);
     let Ok(mut last) = LAST_LAYOUT.lock() else {
         return;
     };
@@ -193,8 +193,8 @@ impl Session {
         let config = config.to_owned();
         let mut current = settings.clone();
         let worker = thread::spawn(move || {
-            let mut layout = (geometry, false);
-            let mut applied_geometry = geometry;
+            let mut layout = (geometry, false, crate::media::Reserve::default());
+            let mut applied_layout = (geometry, layout.2);
             let mut pending = false;
             let mut observed = false;
             let mut styled = false;
@@ -222,7 +222,8 @@ impl Session {
                     continue;
                 }
                 let modified = stamp();
-                if styled && modified == loaded && applied_geometry == layout.0 {
+                let requested = (layout.0, layout.2);
+                if styled && modified == loaded && applied_layout == requested {
                     continue;
                 }
                 let next = if modified == loaded {
@@ -236,9 +237,9 @@ impl Session {
                         }
                     }
                 };
-                if !styled || next != current || applied_geometry != layout.0 {
+                if !styled || next != current || applied_layout != requested {
                     if let Some(host) = shell.as_mut() {
-                        match host.apply(&next, layout.0) {
+                        match host.apply(&next, layout.0, layout.2) {
                             Ok(true) => {}
                             Ok(false) => continue,
                             Err(e) => {
@@ -255,7 +256,7 @@ impl Session {
                         continue;
                     }
                     current = next;
-                    applied_geometry = layout.0;
+                    applied_layout = requested;
                     styled = true;
                 }
                 loaded = modified;

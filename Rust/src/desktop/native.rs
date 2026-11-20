@@ -244,12 +244,24 @@ fn thumbnail_class(class: &str) -> bool {
     matches!(class, "TaskListThumbnailWnd" | "TaskListOverlayWnd")
 }
 
-fn thumbnail_display(hwnd: HWND, owner: HWND, shell: u32) -> Option<Display> {
-    if is_bar(owner, shell) {
-        display_for(owner)
-    } else {
-        display_for(hwnd)
+fn thumbnail_group(class: &str, owner_class: &str, owned_by_tray: bool, bounds: Rect) -> bool {
+    class == "TaskListThumbnailWnd"
+        || (class == "Xaml_WindowedPopupClass"
+            && (thumbnail_class(owner_class)
+                || owned_by_tray && bounds.width() >= 144 && bounds.height() >= 72))
+}
+
+fn thumbnail_display(hwnd: HWND, mut owner: HWND, shell: u32) -> Option<Display> {
+    for _ in 0..4 {
+        if owner.is_null() || window_pid(owner) != shell {
+            break;
+        }
+        if is_bar(owner, shell) {
+            return display_for(owner);
+        }
+        owner = unsafe { GetWindow(owner, GW_OWNER) };
     }
+    display_for(hwnd)
 }
 
 pub(super) fn hovered_thumbnail(point: Point, shell: u32) -> Option<Rect> {
@@ -330,6 +342,7 @@ pub(super) struct Scene {
     pub menus: Vec<Rect>,
     pub panels: Vec<Panel>,
     pub context_menus: Vec<(usize, Rect)>,
+    pub thumbnail_groups: Vec<(Rect, Rect)>,
 }
 
 fn panel_kind(name: &str, class: &str, bounds: Rect, display: Rect, dpi: u32) -> Option<MenuKind> {
@@ -406,11 +419,6 @@ pub(super) fn scene(names: &mut ProcessNames) -> Scene {
             continue;
         }
         let class = window_class(h);
-        if matches!(class.as_str(), "#32768" | "Xaml_WindowedPopupClass")
-            && let Some(home) = display_for(h)
-        {
-            out.context_menus.push((h as usize, home.bounds));
-        }
         let owner = unsafe { GetWindow(h, GW_OWNER) };
         let pid = window_pid(h);
         let name = names.lookup(pid);
@@ -419,6 +427,18 @@ pub(super) fn scene(names: &mut ProcessNames) -> Scene {
         } else {
             window_class(owner)
         };
+        if pid == shell
+            && class == "Xaml_WindowedPopupClass"
+            && !thumbnail_group(&class, &owner_class, is_bar(owner, shell), bounds)
+            && unsafe { GetWindowLongW(h, GWL_EXSTYLE) } as u32 & WS_EX_NOACTIVATE != 0
+        {
+            continue;
+        }
+        if matches!(class.as_str(), "#32768" | "Xaml_WindowedPopupClass")
+            && let Some(home) = display_for(h)
+        {
+            out.context_menus.push((h as usize, home.bounds));
+        }
         let tray_owned = !owner.is_null()
             && (is_bar(owner, shell)
                 || matches!(
@@ -427,6 +447,13 @@ pub(super) fn scene(names: &mut ProcessNames) -> Scene {
                         | "NotifyIconOverflowWindow"
                         | "TaskListThumbnailWnd"
                 ));
+        if shell != 0
+            && pid == shell
+            && thumbnail_group(&class, &owner_class, is_bar(owner, shell), bounds)
+            && let Some(home) = thumbnail_display(h, owner, shell)
+        {
+            out.thumbnail_groups.push((home.bounds, bounds));
+        }
         if shell_surface(name, &class, tray_owned)
             || (tray_owned && matches!(class.as_str(), "#32768" | "Xaml_WindowedPopupClass"))
         {

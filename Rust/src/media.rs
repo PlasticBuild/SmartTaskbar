@@ -3,7 +3,26 @@ mod session;
 mod widget;
 
 pub use session::Worker;
-pub use widget::{Widget, placement};
+pub use widget::{Widget, attached_placement, placement};
+
+pub const HORIZONTAL_DIPS: i32 = 220;
+pub const VERTICAL_DIPS: i32 = 144;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reserve {
+    pub horizontal: i32,
+    pub vertical: i32,
+}
+
+impl Reserve {
+    pub fn along(self, horizontal: bool) -> i32 {
+        if horizontal {
+            self.horizontal
+        } else {
+            self.vertical
+        }
+    }
+}
 
 use std::{sync::Arc, time::Instant};
 

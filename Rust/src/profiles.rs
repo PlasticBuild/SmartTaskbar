@@ -152,18 +152,72 @@ fn rotation_guard(profile: &mut Profile) {
     );
 }
 
-fn taskbar(s: &Settings, joined: bool) -> Result<Profile, String> {
+fn taskbar(s: &Settings, joined: bool, reserve: crate::media::Reserve) -> Result<Profile, String> {
+    let centered;
+    let s = if reserve.horizontal != 0 && s.island {
+        centered = Settings {
+            alignment: Alignment::Center,
+            ..s.clone()
+        };
+        &centered
+    } else {
+        s
+    };
     let mut profile = template(if s.island { ISLAND } else { FULL }, s)?;
     if s.island {
         profile.extend(template(VERTICAL, s)?);
         profile.insert("clickThroughTaskbar".into(), "1".into());
         rotation_guard(&mut profile);
+        if reserve != crate::media::Reserve::default() {
+            let left = reserve.horizontal.max(0);
+            let right = (-reserve.horizontal).max(0);
+            let top = reserve.vertical.max(0);
+            let bottom = (-reserve.vertical).max(0);
+            profile.insert(
+                "controlStyles[0].styles[4]".into(),
+                format!("Margin={{{{$Horizontal?{left}:0}}}},{{{{$Horizontal?0:{top}}}}},{{{{$Horizontal?{right}:0}}}},{{{{$Horizontal?0:{bottom}}}}}"),
+            );
+            if reserve.horizontal != 0 {
+                profile.insert(
+                    "styleConstants[6]".into(),
+                    format!("Inset=max((BarWidth-{}-$Width)/2,0)", left + right),
+                );
+            }
+            if reserve.vertical != 0 {
+                profile.insert(
+                    "styleConstants[10]".into(),
+                    format!(
+                        "VerticalInset=max((BarHeight-{}-$IslandHeight)/2,0)",
+                        top + bottom
+                    ),
+                );
+            }
+            let radius = s.radius;
+            let leading_x = if reserve.horizontal > 0 { 0 } else { radius };
+            let trailing_x = if reserve.horizontal < 0 { 0 } else { radius };
+            let leading_y = if reserve.vertical > 0 { 0 } else { radius };
+            let trailing_y = if reserve.vertical < 0 { 0 } else { radius };
+            profile.insert("controlStyles[8].styles[3]".into(), format!(
+                "CornerRadius={{{{$Horizontal?($Embedded?`{leading_x},{trailing_x},{trailing_x},{leading_x}`:`{leading_x},0,0,{leading_x}`):($VerticalEmbedded?`{leading_y},{leading_y},{trailing_y},{trailing_y}`:`{leading_y},{leading_y},0,0`)}}}}"
+            ));
+            profile.insert("controlStyles[11].styles[3]".into(), format!(
+                "CornerRadius={{{{$Horizontal?($Embedded?skip():`0,{trailing_x},{trailing_x},0`):($VerticalEmbedded?skip():`0,0,{trailing_y},{trailing_y}`)}}}}"
+            ));
+        }
     }
     let animate_icons = s.animate && (s.hover_lift != 0 || s.click_depth != 0);
     {
         // Set the image dimensions in DIPs because the shell's default changes with orientation.
         let size = f64::from(s.icon_size) * 24.0 / 100.0;
-        let mut motion = vec![format!("Width={size:.2}"), format!("Height={size:.2}")];
+        let mut motion = vec![
+            format!("Width={size:.2}"),
+            format!("Height={size:.2}"),
+            format!("MaxWidth={size:.2}"),
+            format!("MaxHeight={size:.2}"),
+            format!("MinWidth={size:.2}"),
+            format!("MinHeight={size:.2}"),
+            "Stretch=Uniform".into(),
+        ];
         if animate_icons {
             motion.push("RenderTransformOrigin=0.5,0.5".into());
             let hover = 1.0 + 0.035 * f64::from(s.hover_lift);
@@ -197,7 +251,7 @@ fn taskbar(s: &Settings, joined: bool) -> Result<Profile, String> {
         }
         rule(
             &mut profile,
-            "Taskbar.TaskListButton > Grid#IconPanel@CommonStates > Image#Icon, Taskbar.TaskListButton > Taskbar.TaskListLabeledButtonPanel#IconPanel@CommonStates > Image#Icon",
+            "Taskbar.TaskListButton > Grid#IconPanel@CommonStates > Image#Icon, Taskbar.TaskListButton > Taskbar.TaskListLabeledButtonPanel#IconPanel@CommonStates > Image#Icon, Taskbar.TaskListButton > Taskbar.TaskListButtonPanel#IconPanel@CommonStates > Image#Icon",
             motion,
         );
     }
@@ -363,6 +417,14 @@ fn positions(s: &Settings, geometry: Geometry) -> Profile {
 /// display-bounded width, the tray's signed horizontal shift, and Search's bottom inset.
 /// Other edges keep Explorer's native flyout positions.
 pub fn build(s: &Settings, geometry: Geometry) -> Result<Vec<Value>, String> {
+    build_with_reserve(s, geometry, crate::media::Reserve::default())
+}
+
+pub fn build_with_reserve(
+    s: &Settings,
+    geometry: Geometry,
+    reserve: crate::media::Reserve,
+) -> Result<Vec<Value>, String> {
     s.validate()?;
     let geometry = geometry.filter(|_| s.island);
     if geometry.is_some_and(|(width, shift, inset)| width <= 0 || shift > 0 || inset < 0) {
@@ -370,7 +432,7 @@ pub fn build(s: &Settings, geometry: Geometry) -> Result<Vec<Value>, String> {
     }
     let joined = geometry.is_some();
     [
-        taskbar(s, joined)?,
+        taskbar(s, joined, reserve)?,
         start_search(s, geometry),
         notifications(s, joined),
         positions(s, geometry),
@@ -413,7 +475,7 @@ mod tests {
                 animate: false,
                 ..Settings::default()
             };
-            let reduced = taskbar(&settings, false).unwrap();
+            let reduced = taskbar(&settings, false, Default::default()).unwrap();
             assert!(reduced.values().any(|value| value == "Width=19.20"));
             assert!(reduced.values().any(|value| value == "Height=19.20"));
             assert!(!reduced.values().any(|v| v.starts_with("RenderTransform@")));
@@ -423,6 +485,7 @@ mod tests {
                     ..settings
                 },
                 false,
+                Default::default(),
             )
             .unwrap();
             assert!(
@@ -443,7 +506,7 @@ mod tests {
                     transparency,
                     ..Settings::default()
                 };
-                let profile = taskbar(&settings, false).unwrap();
+                let profile = taskbar(&settings, false, Default::default()).unwrap();
                 let index = if island { 8 } else { 0 };
                 let brush = &profile[&format!("controlStyles[{index}].styles[0]")];
                 assert!(brush.contains("<SolidColorBrush "));
