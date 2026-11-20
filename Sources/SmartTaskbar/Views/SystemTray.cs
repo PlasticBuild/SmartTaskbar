@@ -103,6 +103,13 @@ namespace SmartTaskbar
             Fun.SetAutoHide(false);
             if (UserSettings.AutoModeType != AutoModeType.None)
                 UserSettings.AutoModeType = AutoModeType.None;
+            if (Fun.GetSystemMetrics(TaskbarHelper.ConvertibleSlateMode) == 0 || Fun.IsAutoHide())
+                return;
+
+            ExplorerTaskbarRegion.RecoverIfEmpty(Fun.FindWindow(TaskbarHelper.PrimaryClass, null));
+            var secondary = IntPtr.Zero;
+            while ((secondary = Fun.FindWindowEx(IntPtr.Zero, secondary, TaskbarHelper.SecondaryClass, null)) != IntPtr.Zero)
+                ExplorerTaskbarRegion.RecoverIfEmpty(secondary);
         }
 
         private static Icon GetIcon() => Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White;

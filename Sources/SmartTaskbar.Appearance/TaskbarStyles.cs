@@ -15,9 +15,12 @@ internal enum TaskbarLayout
     Custom
 }
 
+internal enum IslandAlignment { Center, Left, Right }
+
 internal readonly record struct AppearanceOptions(TaskbarLayout Layout, int Radius = 8, int Transparency = 40,
     int HoverLift = AppearanceOptions.DefaultHoverLift, int ClickDepth = AppearanceOptions.DefaultClickDepth)
 {
+    public IslandAlignment Alignment { get; init; }
     public const int MaxRadius = 24;
     public const int MaxTransparency = 85;
     public const int DefaultHoverLift = 3;
@@ -52,12 +55,17 @@ internal sealed class TaskbarStyles(string folder)
                     return new(TaskbarLayout.Windows);
                 var radius = ReadNumber(Settings, "styleConstants[0]", "SmartTaskbarRadius=", 8);
                 var transparency = ReadNumber(Settings, "styleConstants[1]", "SmartTaskbarTransparency=", 40);
-                var hover = ReadMotionSetting("SmartTaskbarHoverLift=") ?? AppearanceOptions.DefaultHoverLift;
-                var click = ReadMotionSetting("SmartTaskbarClickDepth=") ?? AppearanceOptions.DefaultClickDepth;
+                var hover = ReadConstant("SmartTaskbarHoverLift=") ?? AppearanceOptions.DefaultHoverLift;
+                var click = ReadConstant("SmartTaskbarClickDepth=") ?? AppearanceOptions.DefaultClickDepth;
+                var alignment = (IslandAlignment)(ReadConstant("SmartTaskbarAlignment=") ?? 0);
                 foreach (var layout in new[] { TaskbarLayout.FullWidth, TaskbarLayout.Island })
                 {
-                    var options = new AppearanceOptions(layout, radius, transparency, hover, click);
+                    var options = new AppearanceOptions(layout, radius, transparency, hover, click)
+                    {
+                        Alignment = layout == TaskbarLayout.Island ? alignment : IslandAlignment.Center
+                    };
                     if (JsonElement.DeepEquals(Settings, BuildPreset(options)) ||
+                        JsonElement.DeepEquals(Settings, BuildPreset(options, joinedMenus: false)) ||
                         JsonElement.DeepEquals(Settings, BuildPreset(options, includeMenus: false)) ||
                         JsonElement.DeepEquals(Settings, BuildPreset(options, includeClickThrough: false, includeMenus: false)) ||
                         JsonElement.DeepEquals(Settings, BuildPreset(options, includeMotion: false,
@@ -68,7 +76,7 @@ internal sealed class TaskbarStyles(string folder)
             }
         }
 
-        private int? ReadMotionSetting(string prefix)
+        private int? ReadConstant(string prefix)
         {
             foreach (var entry in Settings.EnumerateObject())
             {
@@ -90,13 +98,15 @@ internal sealed class TaskbarStyles(string folder)
         var current = options.Layout is TaskbarLayout.FullWidth or TaskbarLayout.Island &&
             JsonElement.DeepEquals(profile.Settings, BuildPreset(options)) &&
             shellProfiles.All(shell => shell.Profile.Enabled &&
-                JsonElement.DeepEquals(shell.Profile.Settings, ShellFlyoutStyles.Build(shell.Id, options)));
+                ShellFlyoutStyles.IsCurrent(shell.Id, options, shell.Profile.Settings));
+        RefreshWidthCompanion(options);
         return (options, IsHostRunning(rejectOtherInstall: false),
             current);
     }
 
     public async Task ApplyAsync(AppearanceOptions options)
     {
+        using var writeLock = await AcquireWriteLockAsync();
         var (previous, shellProfiles) = await ReadProfilesAsync();
         var styled = options.Layout != TaskbarLayout.Windows;
 
@@ -117,6 +127,7 @@ internal sealed class TaskbarStyles(string folder)
             if (updated.Options != options)
                 throw new InvalidOperationException("Windows did not retain the requested profile.");
             SetStartup(styled);
+            RefreshWidthCompanion(options);
         }
         catch (Exception error) when (IsServiceError(error))
         {
@@ -135,14 +146,69 @@ internal sealed class TaskbarStyles(string folder)
         }
     }
 
+    internal async Task SyncStartWidthAsync(int width)
+    {
+        if (width is <= 0 or > IslandMenuWidth.Maximum)
+            return;
+        using var writeLock = await AcquireWriteLockAsync();
+        var (current, profiles) = await ReadProfilesAsync();
+        var options = current.Options;
+        var start = profiles.FirstOrDefault(item => item.Id == ShellFlyoutStyles.StartStyler);
+        if (options.Layout != TaskbarLayout.Island || start is null || !start.Profile.Enabled ||
+            !ShellFlyoutStyles.IsCurrent(start.Id, options, start.Profile.Settings))
+            return;
+        var desired = ShellFlyoutStyles.BuildCore(start.Id, options, width);
+        if (!JsonElement.DeepEquals(desired, start.Profile.Settings))
+            await WritePresetAsync(desired, start.Id);
+    }
+
+    private async Task<FileStream> AcquireWriteLockAsync()
+    {
+        var path = Path.Combine(folder, ".appearance-write.lock");
+        var deadline = Environment.TickCount64 + 15_000;
+        while (true)
+        {
+            try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1,
+                FileOptions.DeleteOnClose); }
+            catch (IOException) when (Environment.TickCount64 < deadline) { await Task.Delay(120); }
+        }
+    }
+
     public async Task ResumeAsync()
     {
         var (previous, _) = await ReadProfilesAsync();
+        RefreshWidthCompanion(previous.Options);
         if (previous.Options.Layout is not (TaskbarLayout.FullWidth or TaskbarLayout.Island))
             return;
 
         await CheckScopeAsync();
         await StartHostAsync();
+    }
+
+    private void RefreshWidthCompanion(AppearanceOptions options)
+    {
+        var picker = Path.GetFullPath(Path.Combine(folder, "SmartTaskbar.Appearance.exe"));
+        using var startup = Registry.CurrentUser.OpenSubKey(StartupKey);
+        var ownsStyling = string.Equals(startup?.GetValue(StartupName) as string, $"\"{picker}\" --resume",
+            StringComparison.OrdinalIgnoreCase);
+        using var current = Registry.CurrentUser.OpenSubKey(IslandMenuWidth.Preferences);
+        var registered = current?.GetValue(IslandMenuWidth.CompanionSetting) as string;
+        var ours = string.Equals(registered, picker, StringComparison.OrdinalIgnoreCase);
+        var wanted = ownsStyling && options.Layout == TaskbarLayout.Island;
+        var radius = Math.Clamp(options.Radius, 0, AppearanceOptions.MaxRadius);
+        if (wanted == ours && (!wanted || Equals(current?.GetValue(IslandMenuWidth.CornerRadiusSetting), radius)))
+            return;
+        using var settings = Registry.CurrentUser.CreateSubKey(IslandMenuWidth.Preferences);
+        if (wanted)
+        {
+            settings.SetValue(IslandMenuWidth.CompanionSetting, picker);
+            settings.SetValue(IslandMenuWidth.CornerRadiusSetting, radius, RegistryValueKind.DWord);
+        }
+        else if (ours)
+        {
+            settings.DeleteValue(IslandMenuWidth.CompanionSetting, false);
+            settings.DeleteValue(IslandMenuWidth.CornerRadiusSetting, false);
+        }
     }
 
     private async Task<(Profile Taskbar, List<ShellProfile> Flyouts)> ReadProfilesAsync()
@@ -268,7 +334,7 @@ internal sealed class TaskbarStyles(string folder)
     }
 
     private static JsonElement BuildPreset(AppearanceOptions options, bool includeMotion = true, bool includeClickThrough = true,
-        bool includeMenus = true)
+        bool includeMenus = true, bool joinedMenus = true)
     {
         if (options.Layout is not (TaskbarLayout.FullWidth or TaskbarLayout.Island))
             throw new ArgumentOutOfRangeException(nameof(options));
@@ -278,7 +344,11 @@ internal sealed class TaskbarStyles(string folder)
         using var reader = new StreamReader(stream);
         var radius = Math.Clamp(options.Radius, 0, AppearanceOptions.MaxRadius);
         var transparency = Math.Clamp(options.Transparency, 0, AppearanceOptions.MaxTransparency);
+        var sideInset = IslandMenuWidth.SideInset.ToString(CultureInfo.InvariantCulture);
         var preset = reader.ReadToEnd()
+            .Replace("__LEADING__", options.Alignment == IslandAlignment.Left ? sideInset : "*", StringComparison.Ordinal)
+            .Replace("__TRAILING__", options.Alignment == IslandAlignment.Right ? sideInset : "*", StringComparison.Ordinal)
+            .Replace("__EMBEDDED_INSET__", options.Alignment == IslandAlignment.Center ? "max((BarWidth-$Width)/2,0)" : "0", StringComparison.Ordinal)
             .Replace("__RADIUS__", radius.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("__TRANSPARENCY__", transparency.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("__TINT_OPACITY__", (1 - transparency / 100d).ToString("0.00", CultureInfo.InvariantCulture), StringComparison.Ordinal);
@@ -287,8 +357,13 @@ internal sealed class TaskbarStyles(string folder)
             settings["clickThroughTaskbar"] = "1";
         if (includeMotion)
             AddIconMotion(settings, options);
+        if (options.Layout == TaskbarLayout.Island && options.Alignment != IslandAlignment.Center)
+        {
+            var index = settings.Keys.Count(key => key.StartsWith("styleConstants[", StringComparison.Ordinal));
+            settings[$"styleConstants[{index}]"] = $"SmartTaskbarAlignment={(int)options.Alignment}";
+        }
         if (includeMenus)
-            ShellFlyoutStyles.AddTaskbarMenus(settings, options);
+            ShellFlyoutStyles.AddTaskbarMenus(settings, options, joinedMenus);
         return JsonSerializer.SerializeToElement(settings);
     }
 

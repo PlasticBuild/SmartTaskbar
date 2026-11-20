@@ -2,6 +2,24 @@ using System.Drawing;
 using SmartTaskbar;
 
 var passed = 0;
+Expect(IslandMenuWidth.Measure(600, 2880, 192) == 420, "A short island at 200 percent keeps Start readable");
+Expect(IslandMenuWidth.Measure(1400, 2880, 192) == 700, "Start follows the visible island's logical width");
+Expect(IslandMenuWidth.Measure(2200, 2880, 192) == 760, "A long island caps Start's width");
+Expect(IslandMenuWidth.Measure(500, 640, 192) == 320, "A narrow monitor takes precedence over the usual minimum");
+Expect(IslandMenuWidth.Measure(810, 1280, 144) == 540, "Start uses the originating monitor's DPI");
+var startHost = new Rectangle(-1920, 0, 1920, 1040);
+var leftIsland = new Rectangle(-1902, 1040, 1350, 72);
+var rightIsland = new Rectangle(-1368, 1040, 1350, 72);
+Expect(IslandMenuWidth.StartFaceLeft(startHost, leftIsland, 1140, 144) == leftIsland.Left,
+    "A capped Start keeps the left island's outside edge at 150% on a negative-coordinate display");
+Expect(IslandMenuWidth.StartFaceLeft(startHost, rightIsland, 1140, 144) == rightIsland.Right - 1140,
+    "A capped Start keeps the right island's outside edge");
+var shortIsland = new Rectangle(-318, 1040, 300, 72);
+Expect(IslandMenuWidth.StartFaceLeft(startHost, shortIsland, 630, 144) == shortIsland.Right - 630,
+    "Minimum-width Start expands inward from the right island");
+var centerIsland = new Rectangle(-1360, 1040, 800, 72);
+Expect(IslandMenuWidth.StartFaceLeft(startHost, centerIsland, 630, 144) == -1275,
+    "A centered island keeps the Start face centered");
 var upper = new Rectangle(-200, -1440, 2560, 1440);
 var lower = new Rectangle(0, 0, 1920, 1080);
 var upperBar = new TaskbarInfo((IntPtr)10, (IntPtr)1, upper,
@@ -57,13 +75,17 @@ var spanning = Rectangle.FromLTRB(350, -450, 1560, 1060);
 Expect(upperBar.CoverageFrom(spanning, false, false) == TaskbarCoverage.Overlap
     && lowerBar.CoverageFrom(spanning, false, false) == TaskbarCoverage.Overlap, "A spanning window covers both bars");
 var upperWorkArea = Rectangle.FromLTRB(upper.Left, upper.Top, upper.Right, upperBar.ShownBounds.Top);
-Expect(upperBar.CoverageFrom(upperWorkArea, true, true) == TaskbarCoverage.Overlap
+Expect(upperBar.CoverageFrom(upperWorkArea, true, true) == TaskbarCoverage.Clear
     && lowerBar.CoverageFrom(upperWorkArea, true, false) == TaskbarCoverage.Clear,
-    "A visible maximized window hides only its own display's taskbar");
+    "A maximized window ending above the taskbar leaves it visible");
 Expect(upperBar.CoverageFrom(upperWorkArea, true, false) == TaskbarCoverage.Clear,
     "An occluded maximized window does not hide a taskbar");
 Expect(upperBar.CoverageFrom(Rectangle.FromLTRB(0, -250, 800, -151), false, false) == TaskbarCoverage.Clear,
     "Touching the taskbar boundary leaves the bar clear");
+Expect(upperBar.CoverageFrom(Rectangle.FromLTRB(0, -350, 280, 0), false, false, island) == TaskbarCoverage.Clear,
+    "An app in the transparent margin does not cover the island");
+Expect(upperBar.CoverageFrom(Rectangle.FromLTRB(0, -350, 500, 0), false, false, island) == TaskbarCoverage.Overlap,
+    "An app extending into the island covers it");
 Expect(upperBar.CoverageFrom(upper, false, false) == TaskbarCoverage.Fullscreen
     && lowerBar.CoverageFrom(upper, false, false) == TaskbarCoverage.Clear,
     "Fullscreen is classified independently on each monitor");

@@ -1,28 +1,50 @@
-using System.Drawing.Drawing2D;
+using Microsoft.Win32;
+using Timer = System.Windows.Forms.Timer;
 
 namespace SmartTaskbar.Appearance;
 
 internal sealed class AppearanceWindow : Form
 {
     private readonly TaskbarStyles _styles;
-    private readonly Color _accent = SystemInformation.HighContrast ? SystemColors.Highlight : Color.FromArgb(28, 83, 150);
-    private readonly Color _text = SystemInformation.HighContrast ? SystemColors.WindowText : Color.FromArgb(27, 37, 55);
-    private readonly Color _muted = SystemInformation.HighContrast ? SystemColors.WindowText : Color.FromArgb(74, 88, 108);
-    private readonly RadioButton _fullWidth = new() { Text = "&Full width", AutoSize = true, Checked = true };
-    private readonly RadioButton _island = new() { Text = "&Floating island", AutoSize = true };
-    private readonly Button _apply = new() { Text = "&Apply", AutoSize = true, Enabled = false };
+    private readonly TaskbarSandbox _preview = new() { Dock = DockStyle.Fill, Margin = Padding.Empty };
+    private readonly Timer _previewRefresh = new() { Interval = 4000 };
+    private readonly RadioButton _fullWidth = LayoutChoice("Full &width");
+    private readonly RadioButton _island = LayoutChoice("&Floating island");
+    private readonly CheckBox _fullscreen = new()
+    {
+        Text = "Simulate &fullscreen", Appearance = System.Windows.Forms.Appearance.Button,
+        AutoSize = true, MinimumSize = new Size(138, 32), TextAlign = ContentAlignment.MiddleCenter
+    };
+    private readonly Label _previewHint = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 9, 0, 0) };
+    private readonly Button _apply = new() { Text = "&Apply changes", AutoSize = true, Enabled = false };
     private readonly LinkLabel _restore = new() { Text = "&Restore Windows look", AutoSize = true, Enabled = false };
+    private readonly LinkLabel _webSearch = new() { Text = "Configure Start &web searches…", AutoSize = true };
+    private readonly CheckBox _animateMenus = new() { Text = "&Animate menus", AccessibleName = "Animate menus", AutoSize = true };
+    private readonly Button _menuPreview = new() { Text = "Preview &menu", AccessibleName = "Preview menu", AutoSize = true };
     private readonly Label _status = new() { AutoSize = true, AccessibleName = "Layout status" };
-    private readonly NumericUpDown _radius = new() { Minimum = 0, Maximum = AppearanceOptions.MaxRadius, Value = 8, AccessibleName = "Corner radius in pixels" };
-    private readonly NumericUpDown _transparency = new() { Minimum = 0, Maximum = AppearanceOptions.MaxTransparency, Value = 40, Increment = 5, AccessibleName = "Transparency percentage" };
-    private readonly NumericUpDown _hoverLift = new() { Minimum = 0, Maximum = AppearanceOptions.MaxHoverLift, Value = AppearanceOptions.DefaultHoverLift, AccessibleName = "Hover lift in pixels" };
-    private readonly NumericUpDown _clickDepth = new() { Minimum = 0, Maximum = AppearanceOptions.MaxClickDepth, Value = AppearanceOptions.DefaultClickDepth, AccessibleName = "Click depth in pixels" };
+    private readonly TrackBar _radius = Slider("Corner radius in pixels", AppearanceOptions.MaxRadius, 1);
+    private readonly TrackBar _transparency = Slider("Transparency percentage", AppearanceOptions.MaxTransparency, 5);
+    private readonly TrackBar _hoverLift = Slider("Hover lift in pixels", AppearanceOptions.MaxHoverLift, 1);
+    private readonly TrackBar _clickDepth = Slider("Click depth in pixels", AppearanceOptions.MaxClickDepth, 1);
     private readonly ComboBox _activationZone = new()
     {
-        DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Activation zone", Width = 190
+        DropDownStyle = ComboBoxStyle.DropDownList, DrawMode = DrawMode.OwnerDrawFixed,
+        AccessibleName = "Activation zone", Dock = DockStyle.Fill, Margin = Padding.Empty
     };
+    private readonly ComboBox _alignment = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, DrawMode = DrawMode.OwnerDrawFixed,
+        AccessibleName = "Island position", Width = 84, Margin = new Padding(6, 0, 0, 0)
+    };
+    private readonly List<Control> _cards = [];
+    private readonly List<Label> _secondaryText = [];
+    private AppearanceTheme _theme;
     private AppearanceOptions _current = new(TaskbarLayout.Windows);
     private RevealZone _currentZone;
+    private bool _currentMenuAnimations;
+    private bool _preferencesLoaded;
+    private AppearanceOptions _loadedSelection;
+    private bool _readingIcons;
     private bool _running;
     private bool _presetCurrent;
     private bool _busy;
@@ -38,179 +60,362 @@ internal sealed class AppearanceWindow : Form
         StartPosition = FormStartPosition.CenterScreen;
         Font = SystemFonts.MessageBoxFont;
         Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
-        BackColor = SystemInformation.HighContrast ? SystemColors.Window : Color.FromArgb(245, 247, 252);
-        ForeColor = _text;
-        ClientSize = new Size(686, 526);
-        MaximizeBox = false;
+        ClientSize = new Size(1000, 610);
 
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(24, 18, 24, 20),
-            ColumnCount = 1,
-            RowCount = 7
-        };
+        _fullWidth.Checked = true;
+        _radius.Value = _current.Radius;
+        _transparency.Value = _current.Transparency;
+        _hoverLift.Value = _current.HoverLift;
+        _clickDepth.Value = _current.ClickDepth;
+        _activationZone.Items.AddRange(["Entire edge", "Center half", "Taskbar width"]);
+        _activationZone.SelectedIndex = 0;
+        _activationZone.DrawItem += DrawChoice;
+        _alignment.Items.AddRange([IslandAlignment.Left, IslandAlignment.Center, IslandAlignment.Right]);
+        _alignment.SelectedItem = IslandAlignment.Center;
+        _alignment.DrawItem += DrawChoice;
+
+        var root = Table(1);
+        root.Padding = new Padding(24, 19, 24, 18);
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(root);
 
-        var title = new Label
+        root.Controls.Add(new Label
         {
-            AutoSize = true,
-            Font = new Font(Font.FontFamily, 19, FontStyle.Bold),
-            Text = "Taskbar appearance",
+            Text = "Taskbar appearance", AutoSize = true, Font = new Font(Font.FontFamily, 21, FontStyle.Bold),
             Margin = new Padding(0, 0, 0, 16)
+        }, 0, 0);
+
+        var content = Table(2);
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.Controls.Add(CreatePreview(), 0, 0);
+        content.Controls.Add(CreateSettings(), 1, 0);
+        root.Controls.Add(content, 0, 1);
+        root.Controls.Add(CreateFooter(), 0, 2);
+
+        Shown += async (_, _) =>
+        {
+            _previewRefresh.Start();
+            await Task.WhenAll(RunAsync(null), RefreshIcons());
         };
-        root.Controls.Add(title, 0, 0);
-        root.Controls.Add(CreateOptions(), 0, 1);
-        root.Controls.Add(CreateSettingsRow("Corner &radius (px)", _radius, "&Transparency (%)", _transparency, 16), 0, 2);
-        root.Controls.Add(CreateSettingsRow("&Hover lift (px)", _hoverLift, "C&lick depth (px)", _clickDepth, 8), 0, 3);
-        var activation = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
-        activation.Controls.Add(new Label { Text = "Activation &zone", Width = 122, Margin = new Padding(0, 4, 6, 0) });
-        _activationZone.Items.AddRange(["Entire edge", "Center half", "Taskbar width"]);
-        _activationZone.SelectedIndex = 0;
-        _activationZone.Margin = Padding.Empty;
-        activation.Controls.Add(_activationZone);
-        activation.Controls.Add(new Label { Text = "Intelligent auto-hide", AutoSize = true, ForeColor = _muted, Margin = new Padding(10, 4, 0, 0) });
-        root.Controls.Add(activation, 0, 4);
-
-        _status.ForeColor = _muted;
-        _status.Margin = new Padding(0, 12, 0, 10);
-        _status.MaximumSize = new Size(620, 0);
-        _status.Text = "Reading the current layout…";
-        root.Controls.Add(_status, 0, 5);
-
-        var footer = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _restore.Anchor = AnchorStyles.Left;
-        _restore.LinkColor = _accent;
-        _restore.Margin = Padding.Empty;
-        footer.Controls.Add(_restore, 0, 0);
-        _apply.MinimumSize = new Size(112, 34);
-        _apply.Margin = Padding.Empty;
-        _apply.FlatStyle = FlatStyle.System;
-        footer.Controls.Add(_apply, 1, 0);
-        root.Controls.Add(footer, 0, 6);
-
-        AcceptButton = _apply;
-        Shown += async (_, _) => await RunAsync(null);
-        _fullWidth.CheckedChanged += (_, _) => RefreshButtons();
-        _island.CheckedChanged += (_, _) => RefreshButtons();
-        _radius.ValueChanged += (_, _) => RefreshButtons();
-        _transparency.ValueChanged += (_, _) => RefreshButtons();
-        _hoverLift.ValueChanged += (_, _) => RefreshButtons();
-        _clickDepth.ValueChanged += (_, _) => RefreshButtons();
-        _activationZone.SelectedIndexChanged += (_, _) => RefreshButtons();
+        _previewRefresh.Tick += async (_, _) => await RefreshIcons();
+        _island.CheckedChanged += (_, _) => RefreshSelection();
+        _fullWidth.CheckedChanged += (_, _) => RefreshSelection();
+        _radius.ValueChanged += (_, _) => RefreshSelection();
+        _transparency.ValueChanged += (_, _) => RefreshSelection();
+        _hoverLift.ValueChanged += (_, _) => RefreshSelection();
+        _clickDepth.ValueChanged += (_, _) => RefreshSelection();
+        _activationZone.SelectedIndexChanged += (_, _) => RefreshSelection();
+        _alignment.SelectedIndexChanged += (_, _) => RefreshSelection();
+        _animateMenus.CheckedChanged += (_, _) => RefreshSelection();
+        _menuPreview.Click += (_, _) => _preview.ToggleMenu();
+        _fullscreen.CheckedChanged += (_, _) =>
+        {
+            _preview.SetFullscreen(_fullscreen.Checked);
+            RefreshSelection();
+        };
         _apply.Click += async (_, _) => await RunAsync(Selection);
         _restore.LinkClicked += async (_, _) => await RunAsync(new AppearanceOptions(TaskbarLayout.Windows));
+        _webSearch.LinkClicked += (_, _) =>
+        {
+            using var dialog = new SearchRedirectWindow();
+            dialog.ShowDialog(this);
+        };
         FormClosing += (_, args) => args.Cancel = _busy && args.CloseReason == CloseReason.UserClosing;
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+        RefreshTheme();
+        RefreshSelection();
     }
 
     protected override void OnLoad(EventArgs args)
     {
-        var display = Screen.FromHandle(Handle).WorkingArea;
-        var available = SizeFromClientSize(Size.Empty);
-        var width = Math.Min(LogicalToDeviceUnits(686), display.Width - available.Width);
-        var height = Math.Min(LogicalToDeviceUnits(526), display.Height - available.Height);
-        ClientSize = new Size(width, height);
-        MinimumSize = SizeFromClientSize(new Size(Math.Min(width, LogicalToDeviceUnits(590)),
-            Math.Min(height, LogicalToDeviceUnits(462))));
-        CenterToScreen();
         base.OnLoad(args);
+        var display = Screen.FromHandle(Handle).WorkingArea;
+        var frame = SizeFromClientSize(Size.Empty);
+        var width = Math.Min(LogicalToDeviceUnits(1000), display.Width - frame.Width);
+        var height = Math.Min(LogicalToDeviceUnits(610), display.Height - frame.Height);
+        ClientSize = new Size(width, height);
+        MinimumSize = SizeFromClientSize(new Size(Math.Min(width, LogicalToDeviceUnits(730)),
+            Math.Min(height, LogicalToDeviceUnits(490))));
+        _theme.ApplyTitleBar(Handle);
+        CenterToScreen();
     }
 
-    private static FlowLayoutPanel CreateSettingsRow(string leftLabel, NumericUpDown left,
-        string rightLabel, NumericUpDown right, int top)
+    private TableLayoutPanel CreatePreview()
     {
-        var settings = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, top, 0, 0) };
-        AddField(leftLabel, left, 18);
-        AddField(rightLabel, right, 0);
-        return settings;
+        var card = Card();
+        card.AutoSize = false;
+        card.Margin = new Padding(0, 0, 16, 0);
+        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        void AddField(string label, NumericUpDown field, int spaceAfter)
+        var header = Table(2);
+        header.AutoSize = true;
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.Controls.Add(Heading("Live preview"), 0, 0);
+        var layouts = new FlowLayoutPanel
         {
-            settings.Controls.Add(new Label { Text = label, Width = 122, Margin = new Padding(0, 4, 6, 0) });
-            field.Width = 65;
-            field.Margin = new Padding(0, 0, spaceAfter, 0);
-            settings.Controls.Add(field);
-        }
+            AutoSize = true, WrapContents = false, Margin = new Padding(0, 4, 0, 10), Dock = DockStyle.Fill
+        };
+        layouts.Controls.AddRange([_island, _fullWidth]);
+        header.Controls.Add(layouts, 0, 1);
+        _fullscreen.Margin = new Padding(5, 4, 0, 10);
+        _fullscreen.Anchor = AnchorStyles.Right;
+        header.Controls.Add(_fullscreen, 1, 0);
+        var position = new FlowLayoutPanel
+        {
+            AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, Margin = new Padding(0, 4, 0, 10)
+        };
+        var label = new Label { Text = "&Position", AutoSize = true, Anchor = AnchorStyles.Left, Margin = Padding.Empty };
+        position.Controls.AddRange([label, _alignment]);
+        header.Controls.Add(position, 1, 1);
+
+        card.Controls.Add(header, 0, 0);
+        card.Controls.Add(_preview, 0, 1);
+        _secondaryText.Add(_previewHint);
+        card.Controls.Add(_previewHint, 0, 2);
+        return card;
     }
 
-    private TableLayoutPanel CreateOptions()
+    private Panel CreateSettings()
     {
-        var options = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Margin = Padding.Empty };
-        options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        options.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        options.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        options.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        AddOption(_fullWidth, 0, "Glass across the screen with the controls in their usual Windows positions.");
-        AddOption(_island, 1, "Start, apps and the system tray grouped together on a centered glass bar.");
-        return options;
+        var rail = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Margin = Padding.Empty };
+        var cards = Table(1);
+        cards.Dock = DockStyle.Top;
+        cards.AutoSize = true;
+        rail.Controls.Add(cards);
 
-        void AddOption(RadioButton button, int column, string description)
+        var glass = Card();
+        glass.Controls.Add(Heading("Glass"), 0, 0);
+        glass.Controls.Add(SliderRow("Corner radius", _radius, " px"), 0, 1);
+        glass.Controls.Add(SliderRow("Transparency", _transparency, "%"), 0, 2);
+        cards.Controls.Add(glass, 0, 0);
+
+        var motion = Card();
+        motion.Controls.Add(Heading("Motion"), 0, 0);
+        motion.Controls.Add(SliderRow("Hover lift", _hoverLift, " px"), 0, 1);
+        motion.Controls.Add(SliderRow("Click depth", _clickDepth, " px"), 0, 2);
+        var menuRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = Padding.Empty };
+        _animateMenus.Margin = new Padding(0, 5, 9, 0);
+        menuRow.Controls.AddRange([_animateMenus, _menuPreview]);
+        motion.Controls.Add(menuRow, 0, 3);
+        cards.Controls.Add(motion, 0, 1);
+
+        var behavior = Card();
+        behavior.Controls.Add(Heading("Intelligent auto-hide"), 0, 0);
+        var zoneLabel = new Label { Text = "Activation &zone", AutoSize = true, Margin = new Padding(0, 1, 0, 5) };
+        behavior.Controls.Add(zoneLabel, 0, 1);
+        behavior.Controls.Add(_activationZone, 0, 2);
+        cards.Controls.Add(behavior, 0, 2);
+        _webSearch.Margin = new Padding(0, 3, 0, 5);
+        cards.Controls.Add(_webSearch, 0, 3);
+        return rail;
+    }
+
+    private TableLayoutPanel SliderRow(string label, TrackBar slider, string unit)
+    {
+        var row = Table(2);
+        row.AutoSize = true;
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.Controls.Add(new Label { Text = label, AutoSize = true, Margin = Padding.Empty }, 0, 0);
+        var value = new Label { AutoSize = true, Anchor = AnchorStyles.Right, Margin = Padding.Empty };
+        value.Text = slider.Value + unit;
+        slider.ValueChanged += (_, _) => value.Text = slider.Value + unit;
+        _secondaryText.Add(value);
+        row.Controls.Add(value, 1, 0);
+        row.Controls.Add(slider, 0, 1);
+        row.SetColumnSpan(slider, 2);
+        return row;
+    }
+
+    private TableLayoutPanel CreateFooter()
+    {
+        var footer = Table(3);
+        footer.AutoSize = true;
+        footer.Margin = new Padding(0, 14, 0, 0);
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _status.Text = "Reading the current layout…";
+        _status.Margin = new Padding(0, 0, 8, 0);
+        _status.Anchor = AnchorStyles.Left;
+        _secondaryText.Add(_status);
+        footer.Controls.Add(_status, 0, 0);
+        _restore.Anchor = AnchorStyles.Right;
+        _restore.Margin = new Padding(0, 0, 15, 0);
+        footer.Controls.Add(_restore, 1, 0);
+        _apply.MinimumSize = new Size(132, 36);
+        _apply.Margin = Padding.Empty;
+        footer.Controls.Add(_apply, 2, 0);
+        return footer;
+    }
+
+    private TableLayoutPanel Card()
+    {
+        var card = Table(1);
+        card.AutoSize = true;
+        card.Padding = new Padding(14, 11, 14, 10);
+        card.Margin = new Padding(0, 0, 0, 10);
+        _cards.Add(card);
+        return card;
+    }
+
+    private static TableLayoutPanel Table(int columns) => new()
+    {
+        Dock = DockStyle.Fill, ColumnCount = columns, Margin = Padding.Empty
+    };
+
+    private Label Heading(string heading) => new()
+    {
+        Text = heading, Font = new Font(Font.FontFamily, 11, FontStyle.Bold),
+        AutoSize = true, Margin = new Padding(0, 0, 0, 8)
+    };
+
+    private static RadioButton LayoutChoice(string text) => new()
+    {
+        Text = text, Appearance = System.Windows.Forms.Appearance.Button,
+        AutoSize = true, TextAlign = ContentAlignment.MiddleCenter,
+        MinimumSize = new Size(108, 32), Margin = new Padding(0, 0, 5, 0)
+    };
+
+    private static TrackBar Slider(string name, int maximum, int step) => new()
+    {
+        AccessibleName = name, Maximum = maximum, SmallChange = step, LargeChange = step,
+        TickStyle = TickStyle.None, AutoSize = false, Height = 23, Dock = DockStyle.Fill, Margin = new Padding(0, 1, 0, 5)
+    };
+
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs args)
+    {
+        if (IsHandleCreated && !IsDisposed)
+            BeginInvoke((Action)RefreshTheme);
+    }
+
+    private void RefreshTheme()
+    {
+        _theme = AppearanceTheme.Read();
+        BackColor = _theme.Window;
+        ForeColor = _theme.Text;
+        if (IsHandleCreated)
+            _theme.ApplyTitleBar(Handle);
+        foreach (var card in _cards)
+            card.BackColor = _theme.Card;
+        foreach (var label in _secondaryText)
+            label.ForeColor = _theme.Muted;
+        foreach (var slider in new[] { _radius, _transparency, _hoverLift, _clickDepth })
+            slider.BackColor = _theme.Card;
+        _alignment.BackColor = _activationZone.BackColor = _theme.Input;
+        _alignment.ForeColor = _activationZone.ForeColor = _theme.Text;
+        _restore.LinkColor = _restore.ActiveLinkColor = _restore.VisitedLinkColor = _theme.Accent;
+        _restore.DisabledLinkColor = _theme.Muted;
+        _webSearch.LinkColor = _webSearch.ActiveLinkColor = _webSearch.VisitedLinkColor = _theme.Accent;
+        _preview.SetTheme(_theme);
+        RefreshButtonColors();
+    }
+
+    private void RefreshButtonColors()
+    {
+        StyleButton(_island, _island.Checked, false);
+        StyleButton(_fullWidth, _fullWidth.Checked, false);
+        StyleButton(_fullscreen, _fullscreen.Checked, false);
+        StyleButton(_menuPreview, false, false);
+        StyleButton(_apply, _apply.Enabled, _apply.Enabled);
+    }
+
+    private void StyleButton(ButtonBase button, bool selected, bool primary)
+    {
+        button.FlatStyle = FlatStyle.Flat;
+        button.UseVisualStyleBackColor = false;
+        button.BackColor = primary ? _theme.Accent : _theme.Input;
+        button.ForeColor = primary ? _theme.AccentText : selected ? _theme.Accent : _theme.Text;
+        button.FlatAppearance.BorderColor = selected ? _theme.Accent : _theme.Line;
+        button.FlatAppearance.MouseOverBackColor = primary ? _theme.Accent : _theme.Card;
+        button.FlatAppearance.MouseDownBackColor = primary ? _theme.Accent : _theme.Input;
+        button.FlatAppearance.CheckedBackColor = _theme.Input;
+    }
+
+    private void DrawChoice(object? sender, DrawItemEventArgs args)
+    {
+        var selected = (args.State & DrawItemState.Selected) != 0 &&
+            (args.State & DrawItemState.ComboBoxEdit) == 0;
+        using var ink = new SolidBrush(selected ? _theme.Accent : _theme.Input);
+        args.Graphics.FillRectangle(ink, args.Bounds);
+        if (args.Index >= 0 && sender is ComboBox choice)
         {
-            var gap = column == 0 ? new Padding(0, 0, 8, 0) : new Padding(8, 0, 0, 0);
-            var preview = new LayoutPreview(column == 1, _accent)
-            {
-                Dock = DockStyle.Fill,
-                Margin = gap,
-                AccessibleRole = AccessibleRole.Graphic,
-                AccessibleName = column == 1 ? "Centered island layout preview" : "Full-width layout preview"
-            };
-            preview.Selected = button.Checked;
-            button.CheckedChanged += (_, _) => preview.Selected = button.Checked;
-            _radius.ValueChanged += (_, _) => preview.SetGlass((int)_radius.Value, (int)_transparency.Value);
-            _transparency.ValueChanged += (_, _) => preview.SetGlass((int)_radius.Value, (int)_transparency.Value);
-            _hoverLift.ValueChanged += (_, _) => preview.SetMotion((int)_hoverLift.Value, (int)_clickDepth.Value);
-            _clickDepth.ValueChanged += (_, _) => preview.SetMotion((int)_hoverLift.Value, (int)_clickDepth.Value);
-            preview.Click += (_, _) =>
-            {
-                if (button.Enabled)
-                {
-                    button.Checked = true;
-                    button.Focus();
-                }
-            };
-            options.Controls.Add(preview, column, 0);
-
-            button.Font = new Font(Font.FontFamily, 11, FontStyle.Bold);
-            button.Margin = new Padding(gap.Left, 10, gap.Right, 4);
-            options.Controls.Add(button, column, 1);
-            options.Controls.Add(new Label
-            {
-                Text = description,
-                ForeColor = _muted,
-                Dock = DockStyle.Fill,
-                AutoSize = true,
-                Margin = new Padding(gap.Left + 1, 0, gap.Right, 0)
-            }, column, 2);
+            var textBounds = Rectangle.Inflate(args.Bounds, -4, 0);
+            TextRenderer.DrawText(args.Graphics, choice.GetItemText(choice.Items[args.Index]), Font, textBounds,
+                !choice.Enabled ? _theme.Muted : selected ? _theme.AccentText : _theme.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
         }
+        args.DrawFocusRectangle();
     }
 
     private AppearanceOptions Selection => new(_island.Checked ? TaskbarLayout.Island : TaskbarLayout.FullWidth,
-        (int)_radius.Value, (int)_transparency.Value, (int)_hoverLift.Value, (int)_clickDepth.Value);
+        _radius.Value, _transparency.Value, _hoverLift.Value, _clickDepth.Value)
+    {
+        Alignment = _island.Checked && _alignment.SelectedItem is IslandAlignment alignment ? alignment : IslandAlignment.Center
+    };
 
     private RevealZone SelectedZone => (RevealZone)_activationZone.SelectedIndex;
+
+    private async Task RefreshIcons()
+    {
+        if (_readingIcons)
+            return;
+        _readingIcons = true;
+        var signature = _preview.IconSignature;
+        try
+        {
+            var icons = await Task.Run(() => TaskbarPreviewIcons.Read(signature));
+            if (icons is not null)
+            {
+                if (IsDisposed || _preview.IsDisposed)
+                    icons.Dispose();
+                else
+                    _preview.SetIcons(icons);
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // Keep the last snapshot if Explorer or a shortcut is temporarily unavailable.
+        }
+        finally
+        {
+            _readingIcons = false;
+        }
+    }
 
     private async Task RunAsync(AppearanceOptions? layout)
     {
         _busy = true;
-        RefreshButtons();
+        RefreshSelection();
         try
         {
+            if (layout is null)
+            {
+                _currentZone = RevealZoneSettings.Read();
+                _activationZone.SelectedIndex = (int)_currentZone;
+                _currentMenuAnimations = MenuAnimationSettings.Read();
+                _animateMenus.Checked = _currentMenuAnimations;
+                _loadedSelection = Selection;
+                _preferencesLoaded = true;
+            }
             if (layout is { } selection)
             {
+                if (selection.Layout != TaskbarLayout.Windows && selection == _loadedSelection && PreferencesChanged)
+                {
+                    SavePreferences();
+                    if (!_available) _status.Text = "Behavior settings saved.";
+                    return;
+                }
                 _status.Text = selection.Layout == TaskbarLayout.Windows ? "Restoring Windows appearance…" : "Applying the layout…";
                 await _styles.ApplyAsync(selection);
                 if (selection.Layout != TaskbarLayout.Windows)
-                    RevealZoneSettings.Save(SelectedZone);
+                    SavePreferences();
             }
 
             (_current, _running, _presetCurrent) = await _styles.ReadAsync();
@@ -223,8 +428,10 @@ internal sealed class AppearanceWindow : Form
                 _transparency.Value = _current.Transparency;
                 _hoverLift.Value = _current.HoverLift;
                 _clickDepth.Value = _current.ClickDepth;
+                _alignment.SelectedItem = _current.Alignment;
                 _activationZone.SelectedIndex = (int)_currentZone;
             }
+            _loadedSelection = Selection;
             _available = true;
             _status.Text = _current.Layout switch
             {
@@ -241,171 +448,49 @@ internal sealed class AppearanceWindow : Form
         finally
         {
             _busy = false;
-            RefreshButtons();
+            RefreshSelection();
         }
     }
 
-    private void RefreshButtons()
+    private bool PreferencesChanged => _currentMenuAnimations != _animateMenus.Checked || _currentZone != SelectedZone;
+
+    private void SavePreferences()
+    {
+        if (_currentZone != SelectedZone)
+        {
+            RevealZoneSettings.Save(SelectedZone);
+            _currentZone = SelectedZone;
+        }
+        if (_currentMenuAnimations != _animateMenus.Checked)
+        {
+            MenuAnimationSettings.Save(_animateMenus.Checked);
+            _currentMenuAnimations = _animateMenus.Checked;
+        }
+    }
+
+    private void RefreshSelection()
     {
         _island.Enabled = _fullWidth.Enabled = !_busy;
         _radius.Enabled = _transparency.Enabled = _hoverLift.Enabled = _clickDepth.Enabled = !_busy;
         _activationZone.Enabled = !_busy;
-        _apply.Enabled = _available && !_busy && (_current != Selection || _currentZone != SelectedZone || !_running || !_presetCurrent);
+        _alignment.Enabled = !_busy && _island.Checked;
+        _animateMenus.Enabled = !_busy;
+        _apply.Enabled = !_busy && ((_available && (_current != Selection || !_running || !_presetCurrent)) ||
+            (_preferencesLoaded && PreferencesChanged && (_available || Selection == _loadedSelection)));
         _restore.Enabled = _available && !_busy && _current.Layout != TaskbarLayout.Windows;
+        _preview.SetLayout(Selection, SelectedZone);
+        _preview.SetMenuAnimations(_animateMenus.Checked);
+        _previewHint.Text = _fullscreen.Checked ? "Move to the highlighted edge to reveal the bar." : "Hover or click an app icon to try its motion.";
+        RefreshButtonColors();
     }
 
-    private sealed class LayoutPreview(bool island, Color accent) : Control
+    protected override void Dispose(bool disposing)
     {
-        private bool _selected;
-        private int _radius = 8;
-        private int _transparency = 40;
-        private int _hoverLift = AppearanceOptions.DefaultHoverLift;
-        private int _clickDepth = AppearanceOptions.DefaultClickDepth;
-        private Point? _pointer;
-        private bool _pressed;
-        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
-        public bool Selected
+        if (disposing)
         {
-            get => _selected;
-            set { _selected = value; Invalidate(); }
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            _previewRefresh.Dispose();
         }
-
-        public void SetGlass(int radius, int transparency)
-        {
-            _radius = radius;
-            _transparency = transparency;
-            Invalidate();
-        }
-
-        public void SetMotion(int hoverLift, int clickDepth)
-        {
-            _hoverLift = hoverLift;
-            _clickDepth = clickDepth;
-            Invalidate();
-        }
-
-        protected override void OnMouseMove(MouseEventArgs args)
-        {
-            base.OnMouseMove(args);
-            _pointer = args.Location;
-            Invalidate();
-        }
-
-        protected override void OnMouseLeave(EventArgs args)
-        {
-            base.OnMouseLeave(args);
-            _pointer = null;
-            _pressed = false;
-            Invalidate();
-        }
-
-        protected override void OnMouseDown(MouseEventArgs args)
-        {
-            base.OnMouseDown(args);
-            _pressed = args.Button == MouseButtons.Left;
-            Invalidate();
-        }
-
-        protected override void OnMouseUp(MouseEventArgs args)
-        {
-            base.OnMouseUp(args);
-            _pressed = false;
-            Invalidate();
-        }
-
-        protected override void OnPaint(PaintEventArgs args)
-        {
-            base.OnPaint(args);
-            if (Width < 10 || Height < 10)
-                return;
-
-            var canvas = args.Graphics;
-            canvas.SmoothingMode = SmoothingMode.AntiAlias;
-            var rect = new RectangleF(2, 2, Width - 5, Height - 5);
-            using var frame = Rounded(rect, 11);
-            using var wallpaper = new LinearGradientBrush(rect, Color.FromArgb(21, 52, 86), Color.FromArgb(117, 158, 172), 24);
-            canvas.FillPath(wallpaper, frame);
-            var state = canvas.Save();
-            canvas.SetClip(frame);
-            using var light = new SolidBrush(Color.FromArgb(52, 178, 231, 237));
-            using var dark = new SolidBrush(Color.FromArgb(68, 7, 29, 68));
-            canvas.FillEllipse(light, rect.X + rect.Width * .29f, rect.Y - rect.Height * .54f, rect.Width, rect.Height * 1.19f);
-            canvas.FillEllipse(dark, rect.X - rect.Width * .31f, rect.Y + rect.Height * .2f, rect.Width * 1.25f, rect.Height * 1.48f);
-
-            var dpi = DeviceDpi / 96f;
-            var height = Math.Min(26 * dpi, rect.Height / 3);
-            var width = island ? rect.Width * .69f : rect.Width;
-            var bar = new RectangleF(rect.X + (rect.Width - width) / 2,
-                rect.Bottom - height - (island ? 7 * dpi : 0), width, height);
-            using var panel = Rounded(bar, _radius * .5f * dpi);
-            using var glass = new SolidBrush(Color.FromArgb((int)(255 * (1 - _transparency / 100d)), 22, 32, 49));
-            using var border = new Pen(Color.FromArgb(128, 185, 215, 234), dpi);
-            canvas.FillPath(glass, panel);
-            canvas.DrawPath(border, panel);
-            DrawControls(canvas, bar, dpi);
-            canvas.Restore(state);
-            using var outline = new Pen(Selected ? accent : Color.FromArgb(185, 196, 210), Selected ? 2 * dpi : dpi);
-            canvas.DrawPath(outline, frame);
-        }
-
-        private void DrawControls(Graphics canvas, RectangleF bar, float dpi)
-        {
-            var size = Math.Min(bar.Height * .39f, 11 * dpi);
-            var y = bar.Y + (bar.Height - size) / 2;
-            var x = island ? bar.Left + bar.Width * .09f : bar.Left + bar.Width * .36f;
-            var cell = size * .43f;
-            using var windows = new SolidBrush(Color.FromArgb(105, 197, 246));
-            foreach (var column in new[] { 0, 1 })
-                foreach (var row in new[] { 0, 1 })
-                    canvas.FillRectangle(windows, x + column * size * .54f, y + row * size * .54f, cell, cell);
-
-            x += size * 1.65f;
-            using var glyph = new Pen(Color.FromArgb(224, 239, 250), 1.2f * dpi);
-            canvas.DrawEllipse(glyph, x, y, size * .7f, size * .7f);
-            canvas.DrawLine(glyph, x + size * .62f, y + size * .64f, x + size, y + size);
-            x += size * 1.65f;
-            foreach (var color in new[] { Color.FromArgb(229, 175, 108), Color.FromArgb(115, 126, 206), Color.FromArgb(91, 175, 169) })
-            {
-                var iconBounds = new RectangleF(x, y, size, size);
-                var hit = RectangleF.Inflate(iconBounds, size * .25f, (bar.Height - size) / 2);
-                if (_pointer is { } pointer && hit.Contains(pointer))
-                {
-                    var press = _pressed && _clickDepth > 0;
-                    var delta = size * (press ? -_clickDepth * .03f : _hoverLift * .035f) / 2;
-                    iconBounds.Inflate(delta, delta);
-                    iconBounds.Y += (press ? _clickDepth : -_hoverLift) * dpi * .5f;
-                }
-                using var icon = Rounded(iconBounds, 2 * dpi);
-                using var ink = new SolidBrush(color);
-                canvas.FillPath(ink, icon);
-                x += size * 1.54f;
-            }
-            var tray = bar.Right - size * 3.95f;
-            for (var index = 0; index < 3; index++)
-            {
-                var line = index * 1.7f * dpi;
-                canvas.DrawLine(glyph, tray + index * 2f * dpi, y + size - line, tray + index * 2f * dpi, y + size);
-            }
-            canvas.DrawLine(glyph, tray + size * 1.32f, y + size * .3f, bar.Right - size, y + size * .3f);
-            canvas.DrawLine(glyph, tray + size * 1.52f, y + size * .74f, bar.Right - size, y + size * .74f);
-        }
-
-        private static GraphicsPath Rounded(RectangleF rect, float radius)
-        {
-            var path = new GraphicsPath();
-            if (radius <= 0)
-            {
-                path.AddRectangle(rect);
-                return path;
-            }
-
-            var diameter = Math.Min(radius * 2, Math.Min(rect.Width, rect.Height));
-            path.AddArc(rect.Left, rect.Top, diameter, diameter, 180, 90);
-            path.AddArc(rect.Right - diameter, rect.Top, diameter, diameter, 270, 90);
-            path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
-            path.AddArc(rect.Left, rect.Bottom - diameter, diameter, diameter, 90, 90);
-            path.CloseFigure();
-            return path;
-        }
+        base.Dispose(disposing);
     }
 }

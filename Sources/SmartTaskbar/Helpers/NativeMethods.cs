@@ -57,6 +57,9 @@ namespace SmartTaskbar
         internal static extern IntPtr GetWindow(IntPtr window, uint command);
 
         [DllImport("user32.dll")]
+        internal static extern uint GetDpiForWindow(IntPtr window);
+
+        [DllImport("user32.dll")]
         internal static extern int GetWindowRgn(IntPtr hwnd, IntPtr region);
 
         [DllImport("user32.dll")]

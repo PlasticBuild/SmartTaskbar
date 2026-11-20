@@ -57,7 +57,7 @@ namespace SmartTaskbar
             return new Rectangle(band.X, band.Y + (band.Height - height) / 2, band.Width, height);
         }
 
-        public TaskbarCoverage CoverageFrom(Rectangle window, bool maximized, bool fillsOwnDisplay)
+        public TaskbarCoverage CoverageFrom(Rectangle window, bool maximized, bool fillsOwnDisplay, Rectangle? island = null)
         {
             if (maximized && !fillsOwnDisplay)
                 return TaskbarCoverage.Clear;
@@ -65,7 +65,7 @@ namespace SmartTaskbar
             if (window.Contains(Display))
                 return TaskbarCoverage.Fullscreen;
 
-            return maximized || ShownBounds.IntersectsWith(window) ? TaskbarCoverage.Overlap : TaskbarCoverage.Clear;
+            return (island ?? ShownBounds).IntersectsWith(window) ? TaskbarCoverage.Overlap : TaskbarCoverage.Clear;
         }
 
         public Rectangle ReclaimTaskbarStrip(Rectangle work)

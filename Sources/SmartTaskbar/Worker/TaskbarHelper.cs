@@ -7,7 +7,8 @@ namespace SmartTaskbar
     internal static class TaskbarHelper
     {
         internal const string PrimaryClass = "Shell_TrayWnd";
-        private const string SecondaryClass = "Shell_SecondaryTrayWnd";
+        internal const string SecondaryClass = "Shell_SecondaryTrayWnd";
+        internal const int ConvertibleSlateMode = 0x2003;
         private const uint GetTaskbarPosition = 5;
         private const uint GetAutoHideBarEx = 11;
         private const uint TrayAutoHideMessage = 0x05D1;
@@ -190,11 +191,13 @@ namespace SmartTaskbar
 
         public static bool IsForegroundShellFlyout(IntPtr window, int shellProcess)
         {
-            if (window.GetClassName() is not ("Windows.UI.Core.CoreWindow" or "XamlExplorerHostIslandWindow") ||
-                window.IsWindowInvisible() || GetWindowThreadProcessId(window, out var processId) == 0)
+            var windowClass = window.GetClassName();
+            if (windowClass is not ("Windows.UI.Core.CoreWindow" or "XamlExplorerHostIslandWindow" or
+                "ControlCenterWindow" or "NotificationCenterWindow") || !IsWindowVisible(window) ||
+                    GetWindowThreadProcessId(window, out var processId) == 0)
                 return false;
             if (processId == shellProcess)
-                return true;
+                return windowClass is "Windows.UI.Core.CoreWindow" or "XamlExplorerHostIslandWindow";
             try
             {
                 using var process = Process.GetProcessById(processId);

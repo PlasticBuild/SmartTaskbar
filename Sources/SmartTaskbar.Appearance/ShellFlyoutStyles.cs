@@ -17,6 +17,29 @@ internal static class ShellFlyoutStyles
     };
 
     public static JsonElement Build(string id, AppearanceOptions options)
+        => BuildCore(id, options, id == StartStyler && options.Layout == TaskbarLayout.Island ? PrimaryIslandWidth.Read() : 0);
+
+    internal static bool IsCurrent(string id, AppearanceOptions options, JsonElement settings)
+    {
+        if (id != StartStyler || options.Layout != TaskbarLayout.Island)
+            return JsonElement.DeepEquals(settings, Build(id, options));
+        foreach (var property in settings.EnumerateObject())
+        {
+            if (!property.Name.EndsWith(".target", StringComparison.Ordinal) ||
+                property.Value.GetString() != StartPanel)
+                continue;
+            var key = property.Name[..^7] + ".styles[0]";
+            if (settings.TryGetProperty(key, out var style) && style.GetString() is { } rule &&
+                rule.StartsWith("Width=", StringComparison.Ordinal) && int.TryParse(rule.AsSpan(6), out var width) &&
+                width is > 0 and <= IslandMenuWidth.Maximum)
+                return JsonElement.DeepEquals(settings, BuildCore(id, options, width));
+        }
+        return false;
+    }
+
+    private const string StartPanel = "StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu";
+
+    internal static JsonElement BuildCore(string id, AppearanceOptions options, int startWidth)
     {
         var glass = options.Layout is TaskbarLayout.FullWidth or TaskbarLayout.Island;
         if (id == Positions)
@@ -28,7 +51,7 @@ internal static class ShellFlyoutStyles
                 ["notificationCenter.horizontalShift"] = "0",
                 ["actionCenter.horizontalAlignment"] = island ? "tray" : "windowsDefault",
                 ["actionCenter.horizontalShift"] = "0",
-                ["startMenu.horizontalAlignment"] = island ? "center" : "windowsDefault",
+                ["startMenu.horizontalAlignment"] = island ? options.Alignment.ToString().ToLowerInvariant() : "windowsDefault",
                 ["startMenu.horizontalShift"] = "0",
                 ["startMenu.verticalAlignment"] = "windowsDefault",
                 ["startMenu.verticalShift"] = "0"
@@ -44,21 +67,46 @@ internal static class ShellFlyoutStyles
         if (!glass)
             return JsonSerializer.SerializeToElement(settings);
 
+        var islandLayout = options.Layout == TaskbarLayout.Island;
         var panel = GlassPanel(options);
         switch (id)
         {
             case StartStyler:
-                AddStyles(settings, "Border#AcrylicBorder, Border#AppBorder, Border#AccentAppBorder", panel);
+                AddStyles(settings, "Border#AcrylicBorder, Border#AppBorder, Border#AccentAppBorder",
+                    islandLayout ? DockedPanel(options) : panel);
                 AddStyles(settings, "Border#AcrylicOverlay, Border#LayerBorder, Border#AccentLayerBorder",
-                    ["Background=Transparent", SurfaceRadius(options)]);
+                    ["Background=Transparent", SurfaceRadius(options, islandLayout)]);
                 AddStyles(settings, "Border#StartDropShadow, Border#RootGridDropShadow, Border#DropShadow, Border#dropshadow",
-                    [SurfaceRadius(options)]);
+                    [SurfaceRadius(options, islandLayout)]);
+                if (islandLayout)
+                {
+                    AddStyles(settings, StartPanel, [$"Width={startWidth}", $"MaxWidth={startWidth}"]);
+                    AddStyles(settings, "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid",
+                        ["Width=600", "HorizontalAlignment=Center"]);
+                    AddStyles(settings, "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid > Grid#OuterBorderGrid",
+                        DockedPanel(options));
+                }
                 AddContextMenus(settings, options);
                 break;
             case NotificationStyler:
-                AddStyles(settings, "Grid#NotificationCenterGrid, Grid#CalendarCenterGrid, Grid#ControlCenterRegion, " +
-                    "Grid#MediaTransportControlsRegion, Border#JumpListRestyledAcrylic, Border#ToastBackgroundBorder, Border#ToastBackgroundBorder2",
+                AddStyles(settings, "Grid#MediaTransportControlsRegion, Border#ToastBackgroundBorder, Border#ToastBackgroundBorder2",
                     panel);
+                AddStyles(settings, "Border#JumpListRestyledAcrylic", islandLayout ? DockedPanel(options) : panel);
+                if (islandLayout)
+                {
+                    AddStyles(settings, "ActionCenter.NotificationCenterPage > Grid#RootGrid > Grid#RootContent",
+                        ["RowSpacing=0"]);
+                    AddStyles(settings, "Grid#NotificationCenterGrid",
+                        [.. DockedPanel(options), "Width=332", "HorizontalAlignment=Right", "VerticalAlignment=Bottom",
+                            "Margin=0,0,0,-3", "MinHeight=0", "Shadow:="]);
+                    AddStyles(settings, "Grid#CalendarCenterGrid",
+                        [.. panel.Take(3), "CornerRadius=0", "Width=332", "HorizontalAlignment=Right",
+                            "Margin=0,-2,0,12", "Shadow:="]);
+                    AddStyles(settings, "Grid#ControlCenterRegion",
+                        [.. DockedPanel(options), "Width=344", "HorizontalAlignment=Right"]);
+                }
+                else
+                    AddStyles(settings, "Grid#NotificationCenterGrid, Grid#CalendarCenterGrid, Grid#ControlCenterRegion", panel);
                 AddStyles(settings, "Grid#L1Grid > Border, Border#CalendarHeaderMinimizedOverlay, ScrollViewer#CalendarControlScrollViewer",
                     ["Background=Transparent"]);
                 break;
@@ -66,28 +114,43 @@ internal static class ShellFlyoutStyles
         return JsonSerializer.SerializeToElement(settings);
     }
 
-    public static void AddTaskbarMenus(Dictionary<string, string> settings, AppearanceOptions options)
+    public static void AddTaskbarMenus(Dictionary<string, string> settings, AppearanceOptions options, bool joined = true)
     {
-        AddStyles(settings, "Border#OverflowFlyoutBackgroundBorder", GlassPanel(options));
-        AddContextMenus(settings, options);
+        if (joined)
+        {
+            foreach (var key in settings.Keys.ToArray())
+                if (settings[key].Contains("<AcrylicBrush ", StringComparison.Ordinal))
+                    settings[key] = settings[key].Replace(" TintOpacity=", " TintLuminosityOpacity=\"0.64\" TintOpacity=",
+                        StringComparison.Ordinal);
+        }
+        AddStyles(settings, "Border#OverflowFlyoutBackgroundBorder", joined && options.Layout == TaskbarLayout.Island
+            ? DockedPanel(options) : GlassPanel(options, joined));
+        AddContextMenus(settings, options, joined);
     }
 
-    private static void AddContextMenus(Dictionary<string, string> settings, AppearanceOptions options)
+    private static void AddContextMenus(Dictionary<string, string> settings, AppearanceOptions options, bool joined = true)
     {
         AddStyles(settings, "MenuFlyoutPresenter", [SurfaceRadius(options)]);
-        AddStyles(settings, "MenuFlyoutPresenter > Border, ToolTip > ContentPresenter#LayoutRoot", GlassPanel(options));
+        AddStyles(settings, "MenuFlyoutPresenter > Border, ToolTip > ContentPresenter#LayoutRoot", GlassPanel(options, joined));
     }
 
-    private static string SurfaceRadius(AppearanceOptions options)
-        => FormattableString.Invariant($"CornerRadius={Math.Clamp(options.Radius + 6, 8, 24)}");
-
-    private static string[] GlassPanel(AppearanceOptions options)
+    private static string SurfaceRadius(AppearanceOptions options, bool docked = false)
     {
-        // Larger surfaces keep extra tint for legible text, while retaining the taskbar palette.
-        var opacity = Math.Clamp(1 - options.Transparency / 125d, .38, 1).ToString("0.00", CultureInfo.InvariantCulture);
+        var radius = Math.Clamp(options.Radius + 6, 8, 24);
+        return docked ? FormattableString.Invariant($"CornerRadius={radius},{radius},0,0")
+            : FormattableString.Invariant($"CornerRadius={radius}");
+    }
+
+    private static string[] DockedPanel(AppearanceOptions options)
+        => [..GlassPanel(options).Take(3), SurfaceRadius(options, true)];
+
+    private static string[] GlassPanel(AppearanceOptions options, bool joined = true)
+    {
+        var opacity = joined ? 1 - options.Transparency / 100d : Math.Clamp(1 - options.Transparency / 125d, .38, 1);
+        var glass = joined ? " TintLuminosityOpacity=\"0.64\"" : "";
         return
         [
-            $"Background:=<AcrylicBrush TintColor=\"{{ThemeResource SystemChromeMediumColor}}\" TintOpacity=\"{opacity}\" FallbackColor=\"{{ThemeResource SystemChromeLowColor}}\" />",
+            $"Background:=<AcrylicBrush TintColor=\"{{ThemeResource SystemChromeMediumColor}}\" TintOpacity=\"{opacity.ToString("0.00", CultureInfo.InvariantCulture)}\"{glass} FallbackColor=\"{{ThemeResource SystemChromeLowColor}}\" />",
             "BorderBrush:=<SolidColorBrush Color=\"{ThemeResource SurfaceStrokeColorDefault}\" />",
             "BorderThickness=1",
             SurfaceRadius(options)

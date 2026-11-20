@@ -19,7 +19,7 @@ namespace SmartTaskbar
         private readonly Timer _frames = new() { Interval = 16 };
         private Tray[] _trays = [];
         private TaskbarRecovery? _recovery;
-        private bool _failed;
+        private long _retryAfter;
 
         public TaskbarVisuals()
         {
@@ -38,17 +38,25 @@ namespace SmartTaskbar
         public Rectangle? OpenIslandBounds(IntPtr window)
             => Array.Find(_trays, tray => tray.Bar.Handle == window)?.Region?.OpenIslandBounds;
 
+        public void RefreshOpenShapes()
+        {
+            foreach (var tray in _trays)
+                if (!tray.Clipped)
+                    tray.Region?.RefreshOpenShape();
+        }
+
         // Returns true while the recovery process is still starting.
         public bool Apply(TaskbarCoverage[] coverage, IntPtr revealed, IntPtr obscuredPeek, long now)
         {
-            if (_failed || _trays.Length != coverage.Length || _trays.Length == 0)
+            if (now < _retryAfter || _trays.Length != coverage.Length || _trays.Length == 0)
                 return false;
 
             if (_recovery is null)
             {
                 foreach (var tray in _trays)
                 {
-                    tray.Region = ExplorerTaskbarRegion.Capture(tray.Bar.Handle);
+                    if (ExplorerTaskbarRegion.RecoverIfEmpty(tray.Bar.Handle))
+                        tray.Region = ExplorerTaskbarRegion.Capture(tray.Bar.Handle);
                     if (tray.Region is null)
                     {
                         CancelChanges();
@@ -94,6 +102,11 @@ namespace SmartTaskbar
                 {
                     tray.Region!.RaiseForPeek(promotion);
                 }
+                if (visible && !tray.Clipped && tray.Region!.IsEmpty() && !tray.Region.Restore())
+                {
+                    CancelChanges();
+                    return false;
+                }
                 if (visible && tray.Clipped && tray.Pixels == 0 && !tray.Region!.IsEmpty())
                 {
                     // Explorer has already brought the tray back, such as when leaving a fullscreen app.
@@ -102,8 +115,6 @@ namespace SmartTaskbar
                     tray.Pixels = tray.Depth;
                     tray.Clipped = false;
                 }
-                if (!tray.Clipped)
-                    tray.Region!.RefreshOpenShape();
                 tray.Animation.SetVisible(visible, now);
 
                 // Explorer may replace the region after a settings or display change.
@@ -160,7 +171,9 @@ namespace SmartTaskbar
         private void CancelChanges()
         {
             Reset();
-            _failed = true;
+            // Explorer can still be creating its taskbar windows. The watchdog will try again
+            // after the shell has settled, with the native taskbars visible in the meantime.
+            _retryAfter = Environment.TickCount64 + 5_000;
         }
 
         public void Reset()
@@ -188,7 +201,7 @@ namespace SmartTaskbar
             }
             _recovery?.Dispose();
             _recovery = null;
-            _failed = false;
+            _retryAfter = 0;
         }
 
         public void Dispose()

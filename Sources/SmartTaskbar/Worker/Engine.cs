@@ -18,7 +18,6 @@ namespace SmartTaskbar
         private const int DisplayChanged = 0x007E;
         private const int Hotkey = 0x0312;
         private const int RestoreHotkeyId = 1;
-        private const int ConvertibleSlateMode = 0x2003;
         private const uint RestoreModifiers = 0x4000 | 0x0004 | 0x0002 | 0x0001; // No repeat, Shift, Ctrl, Alt
         private const string WindowCaption = "SmartTaskbar Monitor";
         private const int EdgeDismissMs = 240;
@@ -32,6 +31,8 @@ namespace SmartTaskbar
         private readonly Timer _watchdog = new() { Interval = 1250 };
         private readonly Timer _cursorSampler = new() { Interval = 80 };
         private readonly TaskbarVisuals _visuals = new();
+        private readonly IslandFlyoutPlacement _flyoutPlacement = new();
+        private readonly IslandWidthObserver _islandWidth = new();
         private readonly Func<bool> _isTablet;
         private readonly WinEventCallback _onWindowEvent;
         private readonly EnumWindowCallback _inspectWindow;
@@ -49,6 +50,7 @@ namespace SmartTaskbar
         private bool _nativeTaskbarReady;
         private bool _tablet;
         private TaskbarCoverage[] _coverage = [];
+        private Rectangle?[] _islandBounds = [];
         private long _nextRefresh;
         private EdgeDwell _dwell;
         private TaskbarInfo? _edgeReveal;
@@ -68,7 +70,7 @@ namespace SmartTaskbar
 
         public Engine(Func<bool>? isTablet = null)
         {
-            _isTablet = isTablet ?? (() => GetSystemMetrics(ConvertibleSlateMode) == 0);
+            _isTablet = isTablet ?? (() => GetSystemMetrics(TaskbarHelper.ConvertibleSlateMode) == 0);
             _onWindowEvent = OnWindowEvent;
             _inspectWindow = InspectWindow;
             _update.Tick += (_, _) =>
@@ -110,6 +112,7 @@ namespace SmartTaskbar
             }
 
             _visuals.Reset();
+            _flyoutPlacement.Reset();
             ClearEdgeReveal();
             _visualPeek = IntPtr.Zero;
             _flyout = _flyoutBar = IntPtr.Zero;
@@ -231,7 +234,10 @@ namespace SmartTaskbar
             TaskbarHelper.ReadTaskbars(_shell, displays, _bars);
             _visuals.SetLayout(_bars);
             if (_coverage.Length != _bars.Count)
+            {
                 _coverage = new TaskbarCoverage[_bars.Count];
+                _islandBounds = new Rectangle?[_bars.Count];
+            }
             _edges.Clear();
             _revealZone = RevealZoneSettings.Read();
             foreach (var bar in _bars)
@@ -259,6 +265,7 @@ namespace SmartTaskbar
                 {
                     _tablet = true;
                     _visuals.Reset();
+                    _flyoutPlacement.Reset();
                     _cursorSampler.Stop();
                     ClearEdgeReveal();
                     _visualPeek = IntPtr.Zero;
@@ -313,11 +320,34 @@ namespace SmartTaskbar
 
             var foreground = GetForegroundWindow();
             WatchForegroundLocation(foreground);
+            _visuals.RefreshOpenShapes();
+            for (var index = 0; index < _bars.Count; index++)
+                _islandBounds[index] = _visuals.OpenIslandBounds(_bars[index].Handle);
             _foundFlyout = IntPtr.Zero;
             Array.Clear(_coverage);
             EnumWindows(_inspectWindow, IntPtr.Zero);
-            if (_foundFlyout == IntPtr.Zero && TaskbarHelper.IsForegroundShellFlyout(foreground, _shellProcess))
+            // Explorer may keep a passive clock popup alive while the user works in a shell panel.
+            if (_foundFlyout != foreground && TaskbarHelper.IsForegroundShellFlyout(foreground, _shellProcess))
                 _foundFlyout = foreground;
+            // Start can open with Search holding keyboard focus. Some immersive shell hosts are
+            // omitted from EnumWindows. Resolve the panel that actually covers the dock anchor.
+            if (foreground == IntPtr.Zero || foreground.GetClassName() is "Windows.UI.Core.CoreWindow" or TaskbarHelper.PrimaryClass or TaskbarHelper.SecondaryClass)
+            {
+                for (var index = 0; index < _bars.Count; index++)
+                {
+                    var bar = _bars[index];
+                    if (bar.Edge != TaskbarPosition.Bottom)
+                        continue;
+                    var anchor = _islandBounds[index] ?? bar.Display;
+                    var x = anchor.Left + anchor.Width / 2;
+                    var hit = WindowAt(new Point(x, bar.ShownBounds.Top - bar.ShownBounds.Height));
+                    if (hit.GetClassName() == "Windows.UI.Core.CoreWindow" && TaskbarHelper.IsForegroundShellFlyout(hit, _shellProcess))
+                    {
+                        _foundFlyout = hit;
+                        break;
+                    }
+                }
+            }
             var flyoutBar = UpdateFlyout();
             var shellInUse = flyoutBar != IntPtr.Zero || MenuOpen ||
                 TaskbarHelper.IsTraySurface(foreground.GetClassName()) && !foreground.IsWindowInvisible();
@@ -379,6 +409,9 @@ namespace SmartTaskbar
 
             if (_visuals.Apply(_coverage, reveal, obscuredPeek, now))
                 QueueUpdate();
+            var flyoutTaskbar = _bars.Find(bar => bar.Handle == flyoutBar);
+            _flyoutPlacement.Apply(_flyout, flyoutTaskbar, _visuals.OpenIslandBounds(flyoutBar), now);
+            _islandWidth.Observe(_bars, _shell, flyoutBar, _visuals, now);
         }
 
         private IntPtr UpdateFlyout()
@@ -427,26 +460,29 @@ namespace SmartTaskbar
             for (var index = 0; index < _bars.Count; index++)
             {
                 var bar = _bars[index];
-                var value = bar.CoverageFrom(rect, maximized, windowDisplay == bar.Monitor);
-                if (value != TaskbarCoverage.Clear && (maximized || value == TaskbarCoverage.Fullscreen)
-                    && !IsWindowExposed(window, Rectangle.Intersect(rect, bar.Display)))
-                    continue;
-                if (value > _coverage[index])
+                var value = bar.CoverageFrom(rect, maximized, windowDisplay == bar.Monitor, _islandBounds[index]);
+                if (value > _coverage[index] && IsWindowExposed(window, Rectangle.Intersect(rect, bar.Display),
+                    bar.Handle, window == _foreground))
                     _coverage[index] = value;
             }
             return true;
         }
 
-        private static bool IsWindowExposed(IntPtr window, Rectangle visible)
+        private static bool IsWindowExposed(IntPtr window, Rectangle visible, IntPtr taskbar, bool focus)
         {
             if (visible.Width <= 0 || visible.Height <= 0)
                 return false;
 
             ReadOnlySpan<(int X, int Y)> samples = [(2, 2), (1, 1), (3, 1), (1, 3), (3, 3)];
+            var coveredByTray = false;
             foreach (var (x, y) in samples)
-                if (WindowAt(new Point(visible.Left + visible.Width * x / 4, visible.Top + visible.Height * y / 4)) == window)
+            {
+                var hit = WindowAt(new Point(visible.Left + visible.Width * x / 4, visible.Top + visible.Height * y / 4));
+                if (hit == window)
                     return true;
-            return false;
+                coveredByTray |= hit == taskbar;
+            }
+            return coveredByTray && focus;
         }
 
         private void SampleVisualEdges()
@@ -612,6 +648,8 @@ namespace SmartTaskbar
             _watchdog.Dispose();
             _cursorSampler.Dispose();
             _visuals.Dispose();
+            _flyoutPlacement.Dispose();
+            _islandWidth.Dispose();
             DestroyHandle();
         }
     }

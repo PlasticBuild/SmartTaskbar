@@ -8,11 +8,14 @@
     <ApplicationIcon>../SmartTaskbar/Resources/Logo-Black.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.0.0-preview.3</Version>
+    <Version>1.0.0-preview.4</Version>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Profiles/*.json" />
     <Compile Include="../SmartTaskbar/Models/RevealZone.cs" Link="RevealZone.cs" />
+    <Compile Include="../SmartTaskbar/Models/IslandMenuWidth.cs" Link="IslandMenuWidth.cs" />
     <Compile Include="../SmartTaskbar/Helpers/RevealZoneSettings.cs" Link="RevealZoneSettings.cs" />
+    <Compile Include="../SmartTaskbar/Helpers/MenuAnimationSettings.cs" Link="MenuAnimationSettings.cs" />
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
   </ItemGroup>
 </Project>

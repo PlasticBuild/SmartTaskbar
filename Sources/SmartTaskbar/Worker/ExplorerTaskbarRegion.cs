@@ -23,6 +23,11 @@ namespace SmartTaskbar
         private Rectangle? _lastClip;
         private bool _externalDesktopShape;
 
+        public static bool RecoverIfEmpty(IntPtr window) =>
+            GetWindowRgnBox(window, out _) != EmptyRegion ||
+            (window.GetClassName() is TaskbarHelper.PrimaryClass or TaskbarHelper.SecondaryClass &&
+                IsWindowVisible(window) && SetWindowRgn(window, IntPtr.Zero, true) != 0);
+
         public static ExplorerTaskbarRegion? Capture(IntPtr window)
         {
             if (window.GetClassName() is not (TaskbarHelper.PrimaryClass or "Shell_SecondaryTrayWnd") ||
@@ -106,8 +111,13 @@ namespace SmartTaskbar
         private void SetOpenBounds(Rectangle bounds)
         {
             _openBounds = bounds;
-            _externalDesktopShape = !bounds.IsEmpty && GetWindowRect(window, out var raw) &&
-                raw.ToRectangle().Height == bounds.Height && raw.ToRectangle().Width > bounds.Width;
+            _externalDesktopShape = false;
+            if (bounds.IsEmpty || !GetWindowRect(window, out var raw))
+                return;
+            var frame = raw.ToRectangle();
+            _externalDesktopShape = frame.Width >= frame.Height
+                ? bounds.Height == frame.Height && bounds.Width < frame.Width
+                : bounds.Width == frame.Width && bounds.Height < frame.Height;
         }
 
         public void RaiseForPeek(EventWaitHandle promotion)
