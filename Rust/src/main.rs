@@ -16,11 +16,15 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
     System::Threading::CreateMutexW,
-    UI::WindowsAndMessaging::{FindWindowW, MB_ICONERROR, MB_OK, MessageBoxW},
+    UI::WindowsAndMessaging::{
+        FindWindowW, MB_ICONERROR, MB_OK, MessageBoxW, PostMessageW, WM_CLOSE,
+    },
 };
 
 fn wide(s: &OsStr) -> Vec<u16> {
@@ -37,7 +41,7 @@ impl SingleInstance {
         let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
         let guard = Self(handle);
         if already_exists {
-            Err("SmartTaskbar Rust is already running in this session.".into())
+            Err("SmartTaskbar is already running in this session.".into())
         } else {
             Ok(guard)
         }
@@ -60,6 +64,10 @@ enum Action {
     Check,
     Import(PathBuf),
     Recover,
+    PrepareUpdate,
+    ConfigureStyle,
+    VerifyStyle,
+    SyncStartup,
     Help,
 }
 
@@ -88,6 +96,10 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<Pat
             Some("--inspect") => Action::Inspect,
             Some("--check") => Action::Check,
             Some("--recover-shell") => Action::Recover,
+            Some("--prepare-update") => Action::PrepareUpdate,
+            Some("--configure-style") => Action::ConfigureStyle,
+            Some("--verify-style") => Action::VerifyStyle,
+            Some("--sync-startup") => Action::SyncStartup,
             Some("--help" | "-h") => Action::Help,
             _ => return Err(format!("Unknown argument {}", arg.to_string_lossy())),
         };
@@ -172,6 +184,41 @@ pub(crate) fn apply_settings(path: &Path, old: &Settings, new: &Settings) -> Res
     Ok(())
 }
 
+fn prepare_update(path: &Path) -> Result<(), String> {
+    if csharp_running() {
+        return Err("Close the previous SmartTaskbar controller before installing.".into());
+    }
+    let settings = appearance::window();
+    if !settings.is_null() {
+        unsafe { PostMessageW(settings, WM_CLOSE, 0, 0) };
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !appearance::window().is_null() {
+            if Instant::now() >= deadline {
+                return Err("Close SmartTaskbar Settings before continuing.".into());
+            }
+            thread::sleep(Duration::from_millis(80));
+        }
+    }
+    if engine_running() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        // The mutex can exist while the engine is still opening its stop event.
+        let mut requested = false;
+        while engine_running() {
+            if !requested {
+                requested = desktop::request_stop().is_ok();
+            }
+            if Instant::now() >= deadline {
+                return Err("SmartTaskbar did not finish restoring the shell.".into());
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    if path.with_file_name("shell-restore.json").exists() {
+        return Err("The previous SmartTaskbar session still has a pending shell recovery.".into());
+    }
+    integrations::stop_packaged_style(path)
+}
+
 fn execute() -> Result<(), String> {
     let (action, path) = parse(env::args_os().skip(1))?;
     if action == Action::Recover {
@@ -179,6 +226,9 @@ fn execute() -> Result<(), String> {
     }
     if action == Action::Stop {
         return desktop::request_stop();
+    }
+    if action == Action::ConfigureStyle {
+        return integrations::configure_packaged_style();
     }
     if action == Action::Help {
         println!(
@@ -188,6 +238,12 @@ fn execute() -> Result<(), String> {
     }
     let path = std::path::absolute(path.unwrap_or(settings::default_path()?))
         .map_err(|e| e.to_string())?;
+    if action == Action::PrepareUpdate {
+        return prepare_update(&path);
+    }
+    if action == Action::VerifyStyle {
+        return integrations::verify_packaged_style(&path.with_file_name("Windhawk"));
+    }
     if let Action::Import(profile) = &action {
         let bytes = std::fs::read(profile).map_err(|e| format!("{}: {e}", profile.display()))?;
         let value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
@@ -198,6 +254,7 @@ fn execute() -> Result<(), String> {
     let settings = Settings::load(&path)?;
     match action {
         Action::Settings => appearance::show(&path),
+        Action::SyncStartup => integrations::sign_in(&path, settings.start_at_sign_in),
         Action::Inspect => {
             println!("{}", desktop::inspect()?);
             Ok(())
@@ -229,7 +286,7 @@ fn main() {
                 MessageBoxW(
                     std::ptr::null_mut(),
                     wide(OsStr::new(&error)).as_ptr(),
-                    wide(OsStr::new("SmartTaskbar Rust")).as_ptr(),
+                    wide(OsStr::new("SmartTaskbar")).as_ptr(),
                     MB_OK | MB_ICONERROR,
                 );
             }

@@ -3,7 +3,7 @@ pub mod motion;
 mod session;
 mod widget;
 
-pub use session::Worker;
+pub use session::{SESSION_CHANGED, Worker};
 pub use widget::{Widget, attached_placement, placement};
 
 pub const HORIZONTAL_DIPS: i32 = 220;

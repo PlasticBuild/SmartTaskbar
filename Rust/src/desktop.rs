@@ -112,6 +112,7 @@ pub fn request_stop() -> Result<(), String> {
 }
 
 static DIRTY: AtomicBool = AtomicBool::new(false);
+static MEDIA_CHANGED: AtomicBool = AtomicBool::new(false);
 unsafe extern "system" fn change(
     _: HWINEVENTHOOK,
     event: u32,
@@ -123,7 +124,10 @@ unsafe extern "system" fn change(
 ) {
     if !h.is_null()
         && (event == EVENT_SYSTEM_FOREGROUND
-            || (object == 0 && child == 0 && unsafe { GetAncestor(h, GA_ROOT) } == h))
+            || (object == 0
+                && child == 0
+                && (event != EVENT_OBJECT_LOCATIONCHANGE || unsafe { IsWindowVisible(h) } != 0)
+                && unsafe { GetAncestor(h, GA_ROOT) } == h))
     {
         DIRTY.store(true, Ordering::Relaxed)
     }
@@ -193,6 +197,10 @@ impl Notifications {
             if msg.message == WM_QUIT || (msg.message == WM_HOTKEY && msg.wParam == HOTKEY as usize)
             {
                 return Ok(false);
+            }
+            if msg.hwnd.is_null() && msg.message == media::SESSION_CHANGED {
+                MEDIA_CHANGED.store(true, Ordering::Relaxed);
+                continue;
             }
             unsafe {
                 TranslateMessage(&msg);
@@ -419,6 +427,7 @@ struct Model {
     media: Option<Worker>,
     media_reserve: media::Reserve,
     reserve_changed_at: u64,
+    cursor: Option<policy::Point>,
 }
 impl Model {
     fn sync(&mut self, guard: &mut rescue::Monitor) -> Result<(), String> {
@@ -459,7 +468,9 @@ impl Model {
     }
     fn update(&mut self, settings: &Settings, now: u64) -> Result<u32, String> {
         let cursor = native::cursor();
-        let thumbnail = cursor.and_then(|p| native::hovered_thumbnail(p, self.shell));
+        let pointer_moved = self.cursor != cursor;
+        self.cursor = cursor;
+        let mut thumbnail = None;
         let mut delay = 1200;
         if settings.media_player && !self.managed.is_empty() {
             if self.media.is_none() {
@@ -548,6 +559,18 @@ impl Model {
                 .iter()
                 .find(|p| p.monitor == bar.display)
                 .copied();
+            // Use the hit-tested fallback only when the pointer could plausibly be
+            // interacting with a revealed bar or a thumbnail already in hand.
+            let hovered_thumbnail = if panel.is_none()
+                && (m.depth > 0 || m.thumbnail_hover.is_some())
+                && (covered || !self.scene.thumbnail_groups.is_empty())
+            {
+                *thumbnail.get_or_insert_with(|| {
+                    cursor.and_then(|p| native::hovered_thumbnail(p, self.shell))
+                })
+            } else {
+                None
+            };
             let thumbnail_held = cursor.is_some_and(|point| {
                 grouped_thumbnail_hold(
                     bar.display,
@@ -560,7 +583,7 @@ impl Model {
             let shell_menu = panel.is_some()
                 || self.scene.menus.contains(&bar.display)
                 || thumbnail_held
-                || thumbnail == Some(bar.display);
+                || hovered_thumbnail == Some(bar.display);
             let under_cursor = cursor.is_some_and(|p| face.unwrap_or(bar.bounds).contains(p));
             if (m.depth > 0 && under_cursor) || shell_menu || m.menu.is_some() {
                 m.last_face = Some(now);
@@ -664,8 +687,20 @@ impl Model {
             };
             if animating || bridge || media_frame || offset.is_some() {
                 delay = 16
-            } else if covered {
-                delay = delay.min(32)
+            } else if let Some(point) = cursor {
+                if covered {
+                    // Read the cursor at animation cadence near the edge. Most of
+                    // a maximized session spends its time well away from the bar.
+                    delay = delay.min(pointer_interval(
+                        bar,
+                        point,
+                        surface.dpi,
+                        pointer_moved,
+                        visible,
+                    ));
+                } else if m.media.is_visible() || !self.scene.context_menus.is_empty() {
+                    delay = delay.min(85);
+                }
             }
         }
         Ok(delay)
@@ -687,6 +722,30 @@ impl Model {
                 || self.managed.values().any(|m| m.context.is_some()),
             self.media_reserve,
         );
+    }
+}
+
+fn pointer_interval(
+    bar: policy::NativeBar,
+    cursor: policy::Point,
+    dpi: u32,
+    moved: bool,
+    showing: bool,
+) -> u32 {
+    let bounds = bar.bounds;
+    let margin = (dpi as i32 * 48 / 96).max(48);
+    let near = Rect::new(
+        bounds.left.saturating_sub(margin),
+        bounds.top.saturating_sub(margin),
+        bounds.right.saturating_add(margin),
+        bounds.bottom.saturating_add(margin),
+    );
+    if showing || near.contains(cursor) {
+        32
+    } else if moved {
+        60
+    } else {
+        140
     }
 }
 
@@ -746,7 +805,12 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
     let start = Instant::now();
     let mut settings = initial.clone();
     let mut stamp = modified(settings_path);
-    let (mut next_sync, mut next_scene, mut next_config) = (0, 0, 0);
+    const SCENE_FALLBACK: u64 = 1800;
+    const SCENE_DEBOUNCE: u64 = 40;
+    let mut next_sync = 0;
+    let mut next_scene = 0u64;
+    let mut next_config = 0;
+    let mut next_update = 0;
     loop {
         let now = start.elapsed().as_millis() as u64;
         let mut publish = false;
@@ -763,11 +827,12 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
                 && let Ok(new) = Settings::load(settings_path)
             {
                 settings = new;
+                crate::integrations::settings_changed(&settings);
                 stamp = current;
                 publish = true;
                 next_sync = now;
             }
-            next_config = now + 900;
+            next_config = now + 1500;
         }
         if now >= next_sync {
             model.sync(&mut guard)?;
@@ -775,13 +840,12 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
                 + if model.managed.values().any(|m| m.reflow.is_some()) {
                     27
                 } else {
-                    850
+                    1250
                 };
             publish = true;
         }
-        if now >= next_scene
-            || (DIRTY.load(Ordering::Relaxed) && next_scene.saturating_sub(now) <= 1160)
-        {
+        let dirty_due = next_scene.saturating_sub(SCENE_FALLBACK - SCENE_DEBOUNCE);
+        if now >= next_scene || (DIRTY.load(Ordering::Relaxed) && now >= dirty_due) {
             DIRTY.store(false, Ordering::Relaxed);
             model.scene = if model.managed.is_empty() {
                 model.names = native::ProcessNames::default();
@@ -789,24 +853,26 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
             } else {
                 native::scene(&mut model.names)
             };
-            next_scene = now + 1200;
+            next_scene = now + SCENE_FALLBACK;
             publish = true;
         }
         let before = model.media_reserve;
-        let mut delay = model.update(&settings, now)?;
+        let media_changed = MEDIA_CHANGED.swap(false, Ordering::Relaxed);
+        if publish || now >= next_update || media_changed {
+            next_update = now + u64::from(model.update(&settings, now)?);
+        }
         if before != model.media_reserve && settings.animate {
             next_sync = now;
         }
         if publish || before != model.media_reserve {
             model.publish(&settings)
         }
-        for due in [next_sync, next_scene, next_config] {
-            delay = delay.min(due.saturating_sub(now).min(u32::MAX as u64) as u32);
-        }
+        let mut due = next_sync.min(next_scene).min(next_config).min(next_update);
         if DIRTY.load(Ordering::Relaxed) {
-            delay = delay.min(40)
+            due = due.min(next_scene.saturating_sub(SCENE_FALLBACK - SCENE_DEBOUNCE));
         }
-        if !events.wait(delay)? {
+        let elapsed = start.elapsed().as_millis() as u64;
+        if !events.wait(due.saturating_sub(elapsed) as u32)? {
             break;
         }
     }
@@ -816,6 +882,19 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pointer_sampling_slows_only_away_from_a_covered_bar() {
+        let display = Rect::new(0, -900, 1600, 0);
+        let strip = Rect::new(0, -64, 1600, 0);
+        let bar = policy::NativeBar::from_bounds(display, strip).unwrap();
+        let edge = policy::Point { x: 800, y: -5 };
+        let away = policy::Point { x: 800, y: -400 };
+        assert_eq!(pointer_interval(bar, edge, 144, false, false), 32);
+        assert_eq!(pointer_interval(bar, away, 144, true, false), 60);
+        assert_eq!(pointer_interval(bar, away, 144, false, false), 140);
+        assert_eq!(pointer_interval(bar, away, 144, false, true), 32);
+    }
+
     #[test]
     fn app_owned_tray_menus_remain_held_after_the_pointer_leaves() {
         let a = Rect::new(0, -800, 1200, 0);

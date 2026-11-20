@@ -18,11 +18,13 @@ use windows_sys::Win32::{
 
 mod search;
 mod shell;
+pub use shell::{configure_packaged_style, stop_packaged_style, verify_packaged_style};
 
 pub type Geometry = Option<(i32, i32, i32)>;
 type Layout = (Geometry, bool, crate::media::Reserve);
 enum Update {
     Desktop(Layout),
+    Settings(Settings),
     Stop,
 }
 static UPDATES: OnceLock<Mutex<Option<mpsc::Sender<Update>>>> = OnceLock::new();
@@ -45,10 +47,18 @@ pub fn layout_changed(geometry: Geometry, flyout_open: bool, reserve: crate::med
         return;
     }
     *last = Some(next);
+    send(Update::Desktop(next));
+}
+
+pub fn settings_changed(settings: &Settings) {
+    send(Update::Settings(settings.clone()));
+}
+
+fn send(update: Update) {
     if let Some(Ok(bus)) = UPDATES.get().map(|v| v.lock())
         && let Some(tx) = bus.as_ref()
     {
-        let _ = tx.send(Update::Desktop(next));
+        let _ = tx.send(update);
     }
 }
 
@@ -190,60 +200,49 @@ impl Session {
             .get_or_init(|| Mutex::new(None))
             .lock()
             .map_err(|_| "Layout channel unavailable")? = Some(tx);
-        let config = config.to_owned();
         let mut current = settings.clone();
         let worker = thread::spawn(move || {
+            let mut next = current.clone();
             let mut layout = (geometry, false, crate::media::Reserve::default());
             let mut applied_layout = (geometry, layout.2);
-            let mut pending = false;
+            let mut retry = None;
             let mut observed = false;
             let mut styled = false;
-            let stamp = || std::fs::metadata(&config).and_then(|v| v.modified()).ok();
-            let mut loaded = stamp();
-            // Preferences can be edited by a separate settings window. A single bounded wait
-            // releases the thread between changes and leaves the optional redirector dormant.
+            let settle = Duration::from_millis(350);
+            let recover = Duration::from_secs(3);
             loop {
-                match rx.recv_timeout(if pending {
-                    Duration::from_millis(350)
-                } else {
-                    Duration::from_secs(3)
-                }) {
+                let update = match retry {
+                    Some(delay) => rx.recv_timeout(delay),
+                    None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                };
+                match update {
                     Ok(Update::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Ok(Update::Desktop(next)) => {
                         layout = next;
                         observed = true;
-                        pending = true;
+                        retry = (!layout.1).then_some(settle);
+                        continue;
+                    }
+                    Ok(Update::Settings(requested)) => {
+                        next = requested;
+                        retry = (observed && !layout.1).then_some(settle);
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
-                pending = false;
-                if !observed || layout.1 {
-                    continue;
-                }
-                let modified = stamp();
+                retry = None;
                 let requested = (layout.0, layout.2);
-                if styled && modified == loaded && applied_layout == requested {
-                    continue;
-                }
-                let next = if modified == loaded {
-                    current.clone()
-                } else {
-                    match Settings::load(&config) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            record(&directory, &e);
-                            continue;
-                        }
-                    }
-                };
                 if !styled || next != current || applied_layout != requested {
                     if let Some(host) = shell.as_mut() {
                         match host.apply(&next, layout.0, layout.2) {
                             Ok(true) => {}
-                            Ok(false) => continue,
+                            Ok(false) => {
+                                retry = Some(settle);
+                                continue;
+                            }
                             Err(e) => {
                                 record(&directory, &e);
+                                retry = Some(recover);
                                 continue;
                             }
                         }
@@ -253,13 +252,13 @@ impl Session {
                         && let Err(e) = redirect.configure(&next)
                     {
                         record(&directory, &e);
+                        retry = Some(recover);
                         continue;
                     }
-                    current = next;
+                    current.clone_from(&next);
                     applied_layout = requested;
                     styled = true;
                 }
-                loaded = modified;
             }
             if let Some(host) = shell.as_mut()
                 && let Err(e) = host.restore()

@@ -5,7 +5,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::os::windows::process::CommandExt;
+use std::os::windows::{io::AsRawHandle, process::CommandExt};
 use std::{
     ffi::OsStr,
     fs,
@@ -15,6 +15,12 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use windows_sys::Win32::{
+    Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+    System::Threading::WaitForSingleObject,
+};
+
+const VERSIONS: [&str; 4] = ["1.11.2", "1.8", "1.8", "1.3.1"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Module {
@@ -75,17 +81,17 @@ fn run_cli(root: &Path, args: &[&str], input: Option<&Value>) -> Result<Value, S
         let _ = child.wait();
         return Err(err.to_string());
     }
-    let deadline = Instant::now() + Duration::from_secs(12);
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("The native styling CLI timed out.".into());
-        }
-        thread::sleep(Duration::from_millis(20));
+    let result = unsafe { WaitForSingleObject(child.as_raw_handle(), 12000) };
+    let status = if result == WAIT_OBJECT_0 {
+        child.wait().map_err(|e| e.to_string())?
+    } else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(if result == WAIT_TIMEOUT {
+            "The native styling CLI timed out.".into()
+        } else {
+            "Windows could not wait for the native styling CLI.".into()
+        });
     };
     let output = readout
         .join()
@@ -95,18 +101,148 @@ fn run_cli(root: &Path, args: &[&str], input: Option<&Value>) -> Result<Value, S
         .join()
         .map_err(|_| "Could not read styling error")?
         .map_err(|e| e.to_string())?;
+    let json: Result<Value, _> = serde_json::from_slice(&output);
     if !status.success() {
+        let detail = json
+            .as_ref()
+            .ok()
+            .and_then(|value| value["error"]["message"].as_str())
+            .unwrap_or_else(|| err.trim());
         return Err(format!(
-            "Styling CLI {} failed: {}",
+            "Styling CLI {} failed ({status}): {detail}",
             args.join(" "),
-            err.trim()
         ));
     }
-    let mut json: Value = serde_json::from_slice(&output)
-        .map_err(|e| format!("Invalid native styling response: {e}"))?;
+    let mut json = json.map_err(|e| format!("Invalid native styling response: {e}"))?;
     json.get_mut("data")
         .map(Value::take)
         .ok_or_else(|| "Missing styling response data".into())
+}
+
+fn inventory(root: &Path) -> Result<Vec<Value>, String> {
+    let list = run_cli(root, &["mod", "list"], None)?;
+    let modules = list["mods"]
+        .as_array()
+        .ok_or("Malformed module inventory")?;
+    if modules.len() != IDS.len() {
+        return Err("Use the dedicated four-module SmartTaskbar styling profile.".into());
+    }
+    IDS.iter()
+        .zip(VERSIONS)
+        .map(|(id, version)| {
+            modules
+                .iter()
+                .find(|v| v["id"] == *id && v["version"] == version)
+                .cloned()
+                .ok_or_else(|| format!("Expected {id} {version}"))
+        })
+        .collect()
+}
+
+pub fn configure_packaged_style() -> Result<(), String> {
+    let root = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .with_file_name("Windhawk");
+    let windows = PathBuf::from(std::env::var_os("SystemRoot").ok_or("Missing Windows directory")?);
+    let mut includes = vec![
+        windows.join("explorer.exe"),
+        windows.join("System32/ShellHost.exe"),
+    ];
+    for dir in fs::read_dir(windows.join("SystemApps")).map_err(|e| e.to_string())? {
+        let dir = dir.map_err(|e| e.to_string())?.path();
+        for name in [
+            "StartMenuExperienceHost.exe",
+            "SearchHost.exe",
+            "SearchApp.exe",
+            "ShellExperienceHost.exe",
+        ] {
+            let executable = dir.join(name);
+            if executable.is_file() {
+                includes.push(executable);
+            }
+        }
+    }
+    let includes = includes
+        .iter()
+        .map(|p| p.to_string_lossy().replace('/', "\\"))
+        .collect::<Vec<_>>()
+        .join("|");
+    let ini = format!(
+        "[Settings]\r\nLoggingVerbosity=0\r\nInclude={includes}\r\nExclude=*\r\nInjectIntoCriticalProcesses=0\r\nInjectIntoIncompatiblePrograms=0\r\nInjectIntoGames=0\r\n"
+    );
+    atomic_write(&root.join("AppData/Engine/settings.ini"), ini.as_bytes())?;
+    verify_packaged_style(&root)?;
+    // A normal Windhawk mod install writes its declared defaults. A portable
+    // bundle has no installer for each mod, so create that restorable baseline.
+    for id in IDS {
+        let defaults = run_cli(&root, &["mod", "settings", "defaults", id], None)?;
+        let settings = &defaults["settings"];
+        if settings
+            .as_object()
+            .is_none_or(|settings| settings.is_empty())
+        {
+            return Err(format!("Missing defaults for {id}"));
+        }
+        run_cli(
+            &root,
+            &["mod", "settings", "write", id, "-"],
+            Some(settings),
+        )?;
+    }
+    Ok(())
+}
+
+pub fn verify_packaged_style(root: &Path) -> Result<(), String> {
+    let windows = PathBuf::from(std::env::var_os("SystemRoot").ok_or("Missing Windows directory")?);
+    let settings = run_cli(root, &["app", "settings", "get"], None)?;
+    if !scope_ok(&settings, &windows) {
+        return Err(
+            "The bundled styling host does not have the required Windows shell scope.".into(),
+        );
+    }
+    inventory(root)?;
+    Ok(())
+}
+
+pub fn stop_packaged_style(config: &Path) -> Result<(), String> {
+    let Some(dir) = config.parent() else {
+        return Ok(());
+    };
+    let mut root = dir.join("Windhawk");
+    if !root.is_dir() {
+        root = match fs::read_to_string(dir.join("style-root.txt")) {
+            Ok(path) => PathBuf::from(path.trim()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.to_string()),
+        };
+    }
+    let path = root.join("windhawk.exe");
+    if !root.is_absolute()
+        || !process_paths("windhawk.exe")?.iter().any(|p| {
+            p.to_string_lossy()
+                .eq_ignore_ascii_case(&path.to_string_lossy())
+        })
+    {
+        return Ok(());
+    }
+    let windows = PathBuf::from(std::env::var_os("SystemRoot").ok_or("Missing Windows directory")?);
+    if !scope_ok(
+        &run_cli(&root, &["app", "settings", "get"], None)?,
+        &windows,
+    ) {
+        return Err("The running styling host is outside SmartTaskbar's shell scope.".into());
+    }
+    inventory(&root)?;
+    let status = Command::new(&path)
+        .args(["-exit", "-wait"])
+        .creation_flags(0x08000000)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("The previous styling host could not be stopped.".into())
+    }
 }
 
 fn process_paths(name: &str) -> Result<Vec<PathBuf>, String> {
@@ -245,20 +381,8 @@ impl Host {
         }) {
             return Err("Another Windhawk installation is active.".into());
         }
-        let list = run_cli(&root, &["mod", "list"], None)?;
-        let modules = list["mods"]
-            .as_array()
-            .ok_or("Malformed module inventory")?;
-        let versions = ["1.11.2", "1.8", "1.8", "1.3.1"];
-        if modules.len() != IDS.len() {
-            return Err("Use the dedicated four-module SmartTaskbar styling profile.".into());
-        }
         let mut current = Vec::new();
-        for (id, version) in IDS.iter().zip(versions) {
-            let found = modules
-                .iter()
-                .find(|v| v["id"] == *id && v["version"] == version)
-                .ok_or_else(|| format!("Expected {id} {version}"))?;
+        for (id, found) in IDS.iter().zip(inventory(&root)?) {
             let settings =
                 run_cli(&root, &["mod", "settings", "get", id], None)?["settings"].clone();
             if !settings.is_object() {

@@ -20,8 +20,10 @@ use windows::{
 };
 use windows_sys::Win32::{
     System::Threading::GetCurrentThreadId,
-    UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL},
+    UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP},
 };
+
+pub const SESSION_CHANGED: u32 = WM_APP + 0x61;
 
 type Latest = Arc<Mutex<Option<Arc<Track>>>>;
 enum Event {
@@ -323,16 +325,17 @@ fn listen(
     let mut metadata = false;
     while !stopping.load(std::sync::atomic::Ordering::Relaxed) {
         let track = sessions.update(&tx, metadata).map(Arc::new);
+        let fallback = Duration::from_secs(if track.is_some() { 2 } else { 8 });
         if let Ok(mut view) = latest.lock() {
             let redraw = view.is_some() || track.is_some();
             *view = track;
             if redraw {
-                unsafe { PostThreadMessageW(thread, WM_NULL, 0, 0) };
+                unsafe { PostThreadMessageW(thread, SESSION_CHANGED, 0, 0) };
             }
         }
         metadata = false;
         // Events wake immediately. The slower fallback covers providers that never emit changes.
-        let first = match rx.recv_timeout(Duration::from_secs(2)) {
+        let first = match rx.recv_timeout(fallback) {
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             result => result.ok(),
         };

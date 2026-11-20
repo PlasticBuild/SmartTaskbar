@@ -222,7 +222,29 @@ impl Drop for DpiContext {
     }
 }
 
+const WINDOW_CLASS: &str = "SmartTaskbar.Rust.Appearance";
+
+pub fn window() -> HWND {
+    unsafe { FindWindowW(wide(WINDOW_CLASS).as_ptr(), null()) }
+}
+
 pub fn show(settings_path: &Path) -> Result<(), String> {
+    let _instance = match crate::SingleInstance::lock(r"Local\SmartTaskbarRust.Appearance") {
+        Ok(instance) => instance,
+        Err(error) => {
+            let hwnd = window();
+            if hwnd.is_null() {
+                return Err(error);
+            }
+            unsafe {
+                if IsIconic(hwnd) != 0 {
+                    ShowWindow(hwnd, SW_RESTORE);
+                }
+                SetForegroundWindow(hwnd);
+            }
+            return Ok(());
+        }
+    };
     let saved = Settings::load(settings_path)?;
     let mut choices: Vec<_> = PROVIDERS.iter().map(|p| p.to_string()).collect();
     if !choices.contains(&saved.web_engine) {
@@ -233,7 +255,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         ));
         let instance = GetModuleHandleW(null());
-        let class = wide("SmartTaskbar.Rust.Appearance");
+        let class = wide(WINDOW_CLASS);
         let wc = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
@@ -275,7 +297,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             class.as_ptr(),
-            wide("SmartTaskbar Appearance").as_ptr(),
+            wide("SmartTaskbar Settings").as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

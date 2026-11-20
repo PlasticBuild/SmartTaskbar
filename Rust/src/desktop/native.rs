@@ -215,11 +215,22 @@ pub(super) fn bars() -> Vec<Bar> {
     if pid == 0 {
         return Vec::new();
     }
-    top_windows()
-        .into_iter()
-        .filter(|h| window_pid(*h) == pid)
-        .filter_map(|h| bar_info(h, pid))
-        .collect()
+    let mut bars = Vec::new();
+    for class in ["Shell_TrayWnd", "Shell_SecondaryTrayWnd"] {
+        let class = wide(class);
+        let mut after = null_mut();
+        loop {
+            let h = unsafe { FindWindowExW(null_mut(), after, class.as_ptr(), null()) };
+            if h.is_null() || h == after {
+                break;
+            }
+            if let Some(bar) = bar_info(h, pid) {
+                bars.push(bar);
+            }
+            after = h;
+        }
+    }
+    bars
 }
 
 pub(super) fn tablet() -> bool {
