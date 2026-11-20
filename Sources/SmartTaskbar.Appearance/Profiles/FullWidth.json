@@ -1,0 +1,16 @@
+{
+  "theme": "",
+  "clickThroughTaskbar": "0",
+  "xamlDiagnosticsHandling": "alert",
+  "styleConstants[0]": "SmartTaskbarRadius=__RADIUS__",
+  "styleConstants[1]": "SmartTaskbarTransparency=__TRANSPARENCY__",
+  "controlStyles[0].target": "Taskbar.TaskbarFrame > Grid#RootGrid > Taskbar.TaskbarBackground > Grid",
+  "controlStyles[0].styles[0]": "Background:=<AcrylicBrush TintColor=\"{ThemeResource SystemChromeMediumColor}\" TintOpacity=\"__TINT_OPACITY__\" FallbackColor=\"{ThemeResource SystemChromeLowColor}\" />",
+  "controlStyles[0].styles[1]": "BorderBrush:=<SolidColorBrush Color=\"{ThemeResource SurfaceStrokeColorDefault}\"/>",
+  "controlStyles[0].styles[2]": "BorderThickness=0,1,0,0",
+  "controlStyles[1].target": "Taskbar.TaskbarFrame > Grid#RootGrid > Taskbar.TaskbarBackground > Grid > Rectangle#BackgroundFill",
+  "controlStyles[1].styles[0]": "Fill=Transparent",
+  "controlStyles[2].target": "Taskbar.TaskbarFrame > Grid#RootGrid > Taskbar.TaskbarBackground > Grid > Rectangle#BackgroundStroke",
+  "controlStyles[2].styles[0]": "Fill=Transparent",
+  "controlStyles[0].styles[3]": "CornerRadius=__RADIUS__,__RADIUS__,0,0"
+}
