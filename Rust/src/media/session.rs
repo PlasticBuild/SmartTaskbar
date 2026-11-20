@@ -422,8 +422,44 @@ fn read_details(session: &Session) -> Metadata {
         art: item
             .Thumbnail()
             .ok()
-            .and_then(|thumbnail| decode_art(&thumbnail).ok()),
+            .and_then(|thumbnail| decode_art(&thumbnail).ok())
+            .map(blur_backdrop),
     }
+}
+
+fn blur_backdrop(mut art: Art) -> Art {
+    let (w, h) = (art.width as usize, art.height as usize);
+    let radius = (w.min(h) / 6).clamp(1, 15);
+    let mut horizontal = art.pixels.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let left = x.saturating_sub(radius);
+            let right = (x + radius).min(w - 1);
+            let index = (y * w + x) * 4;
+            for channel in 0..3 {
+                let sum: usize = (left..=right)
+                    .map(|column| usize::from(art.pixels[(y * w + column) * 4 + channel]))
+                    .sum();
+                horizontal[index + channel] = (sum / (right - left + 1)) as u8;
+            }
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let top = y.saturating_sub(radius);
+            let bottom = (y + radius).min(h - 1);
+            let index = (y * w + x) * 4;
+            for (channel, tint) in [22, 17, 14].into_iter().enumerate() {
+                let sum: usize = (top..=bottom)
+                    .map(|row| usize::from(horizontal[(row * w + x) * 4 + channel]))
+                    .sum();
+                let color = sum / (bottom - top + 1);
+                // A dark wash preserves white control contrast across bright artwork.
+                art.pixels[index + channel] = ((color * 45 + tint * 55) / 100) as u8;
+            }
+        }
+    }
+    art
 }
 
 fn decode_art(
@@ -515,4 +551,15 @@ mod tests {
         drop((thumb, writer, stream));
         unsafe { RoUninitialize() };
     }
+}
+#[test]
+fn blur_uses_nearby_artwork_and_darkens_bright_pixels() {
+    let art = blur_backdrop(Art {
+        width: 3,
+        height: 1,
+        pixels: vec![0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255],
+    });
+    assert!(art.pixels[0] > 20 && art.pixels[0] < 100);
+    assert!(art.pixels[4] > 20 && art.pixels[4] < 100);
+    assert_eq!(art.pixels[0], art.pixels[8]);
 }

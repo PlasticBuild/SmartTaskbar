@@ -698,17 +698,13 @@ unsafe fn draw_scene(c: &Canvas, s: &State) {
             c.round(Box2::at(tx + 16, ty - 2, 12, 7), 2, glass, p.text);
             c.fill(Box2::at(tx + 18, ty, 7, 3), p.text);
             if let Some(player) = g.media {
-                c.round(player, (s.draft.radius as i32).max(3), glass, p.line);
-                let thumbnail = (player.h - 4).min(18);
-                let art = Box2::at(player.x + 3, player.y + 2, thumbnail, thumbnail);
-                c.round(art, 2, mix(glass, p.accent, 0.25), p.line);
-                c.text(
-                    Box2::at(art.x + 2, art.y, art.w, art.h),
-                    "♪",
-                    s.paint.normal,
-                    p.text,
+                c.round(
+                    player,
+                    (s.draft.radius as i32).max(3),
+                    mix(glass, p.accent, 0.30),
+                    p.line,
                 );
-                let start = art.x + art.w + 4;
+                let start = player.x + 5;
                 let width = player.x + player.w - start - 4;
                 c.text(
                     Box2::at(start, player.y, width, player.h - 3),

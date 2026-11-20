@@ -31,8 +31,10 @@ pub fn from_export(value: &Value) -> Result<Settings, String> {
         .ok_or("Expected a taskbar appearance settings object.")?;
     let frame = rules(profile, FRAME);
     let base = frame.iter().copied().find(|s| {
-        s.starts_with("Background:=<AcrylicBrush ")
-            && s.contains("TintColor=\"{ThemeResource SystemChromeMediumColor}\"")
+        (s.starts_with("Background:=<AcrylicBrush ")
+            && s.contains("TintColor=\"{ThemeResource SystemChromeMediumColor}\""))
+            || (s.starts_with("Background:=<SolidColorBrush ")
+                && s.contains("Color=\"{ThemeResource SystemChromeMediumColor}\""))
     });
     let is_glass = base.is_some()
         && profile.get("theme").and_then(Value::as_str) == Some("")
@@ -62,14 +64,17 @@ pub fn from_export(value: &Value) -> Result<Settings, String> {
     // The earliest presets expressed these values directly in XAML. Later presets
     // include the user's original numbers in named constants regardless of style indices.
     if let Some(value) = base
-        .and_then(|s| s.split_once(" TintOpacity=\""))
+        .and_then(|s| {
+            s.split_once(" Opacity=\"")
+                .or_else(|| s.split_once(" TintOpacity=\""))
+        })
         .and_then(|(_, s)| s.split('"').next())
     {
         let opacity: f64 = value
             .parse()
-            .map_err(|_| "Invalid acrylic opacity in the appearance export.")?;
+            .map_err(|_| "Invalid background opacity in the appearance export.")?;
         if !(0.0..=1.0).contains(&opacity) {
-            return Err("Invalid acrylic opacity in the appearance export.".into());
+            return Err("Invalid background opacity in the appearance export.".into());
         }
         result.transparency = ((1.0 - opacity) * 100.0).round() as u8;
     }

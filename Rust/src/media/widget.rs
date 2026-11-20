@@ -21,7 +21,18 @@ use windows_sys::Win32::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placement {
     pub bounds: Rect,
-    from_right: bool,
+    vertical: bool,
+    from_end: bool,
+}
+
+impl Placement {
+    fn length(self) -> i32 {
+        if self.vertical {
+            self.bounds.height()
+        } else {
+            self.bounds.width()
+        }
+    }
 }
 
 pub fn placement(
@@ -35,13 +46,59 @@ pub fn placement(
     let gap = px(5);
     let display = bar.display;
     let native = display.intersection(bar.bounds)?;
+    let face = island.and_then(|r| r.intersection(native));
+    if !bar.edge.horizontal() {
+        let width = native.width().min(px(56));
+        let height = px(190).min(display.height() - gap * 2);
+        if width < px(32) || height < px(135) || width + gap * 2 > display.width() {
+            return None;
+        }
+        let fitted = face.and_then(|face| {
+            let space = if low {
+                face.top - display.top
+            } else {
+                display.bottom - face.bottom
+            };
+            let inline = height.min(space - gap * 2);
+            if inline < px(135) {
+                return None;
+            }
+            let x = native.left + (native.width() - width) / 2;
+            let y = if low {
+                face.top - gap - inline
+            } else {
+                face.bottom + gap
+            };
+            Some(Rect::new(x, y, x + width, y + inline))
+        });
+        let bounds = fitted.or_else(|| {
+            let anchor = face.unwrap_or(native);
+            let x = if bar.edge == Edge::Left {
+                native.right + gap
+            } else {
+                native.left - width - gap
+            };
+            let y = (if low {
+                anchor.top
+            } else {
+                anchor.bottom - height
+            })
+            .clamp(display.top + gap, display.bottom - gap - height);
+            let bounds = Rect::new(x, y, x + width, y + height);
+            (bounds.intersection(display) == Some(bounds)).then_some(bounds)
+        })?;
+        return Some(Placement {
+            bounds,
+            vertical: true,
+            from_end: low,
+        });
+    }
     let width = px(270).min(display.width() - gap * 2);
     if width < px(172) {
         return None;
     }
     let depth = px(46);
-    if let Some(face) = island.and_then(|r| r.intersection(native))
-        && bar.edge.horizontal()
+    if let Some(face) = face
         && native.height() >= px(35)
     {
         let slot = if low {
@@ -60,40 +117,25 @@ pub fn placement(
             let y = native.top + (native.height() - height) / 2;
             return Some(Placement {
                 bounds: Rect::new(x, y, x + inline, y + height),
-                from_right: low,
+                vertical: false,
+                from_end: low,
             });
         }
     }
     // When no inline space is free, attach on the inward side so no native target is covered.
-    let anchor = island
-        .and_then(|r| r.intersection(native))
-        .unwrap_or(native);
-    let (x, y) = match bar.edge {
-        Edge::Top | Edge::Bottom => (
-            if low {
-                anchor.left + gap
-            } else {
-                anchor.right - gap - width
-            },
-            if bar.edge == Edge::Bottom {
-                native.top - gap - depth
-            } else {
-                native.bottom + gap
-            },
-        ),
-        Edge::Left | Edge::Right => (
-            if bar.edge == Edge::Left {
-                native.right + gap
-            } else {
-                native.left - width - gap
-            },
-            if low {
-                anchor.top
-            } else {
-                anchor.bottom - depth
-            },
-        ),
-    };
+    let anchor = face.unwrap_or(native);
+    let (x, y) = (
+        if low {
+            anchor.left + gap
+        } else {
+            anchor.right - gap - width
+        },
+        if bar.edge == Edge::Bottom {
+            native.top - gap - depth
+        } else {
+            native.bottom + gap
+        },
+    );
     if display.height() < depth + gap * 2 {
         return None;
     }
@@ -102,23 +144,37 @@ pub fn placement(
     let bounds = Rect::new(x, y, x + width, y + depth);
     bounds.intersection(native).is_none().then_some(Placement {
         bounds,
-        from_right: low,
+        vertical: false,
+        from_end: low,
     })
 }
 
 #[derive(Clone, Copy)]
 struct Layout {
-    art: Rect,
     label: Rect,
     buttons: [Rect; 3],
     scrub: Rect,
+    vertical: bool,
 }
 
 impl Layout {
     fn new(w: i32, h: i32, dpi: u32) -> Self {
         let px = |n: i32| n * dpi as i32 / 96;
         let gap = px(6);
-        let size = h - gap * 2;
+        if h > w {
+            let button_h = px(27).min((h - gap * 2) / 3);
+            let start = (h - button_h * 3) / 2;
+            let buttons = std::array::from_fn(|i| {
+                let y = start + i as i32 * button_h;
+                Rect::new(0, y, w - px(12), y + button_h)
+            });
+            return Self {
+                label: Rect::default(),
+                buttons,
+                scrub: Rect::new(w - px(12), gap, w - px(2), h - gap),
+                vertical: true,
+            };
+        }
         let button = px(24);
         let control_x = w - gap - 3 * button;
         let controls = std::array::from_fn(|i| {
@@ -126,15 +182,20 @@ impl Layout {
             Rect::new(x, px(1), x + button, h - px(11))
         });
         Self {
-            art: Rect::new(gap, gap, gap + size, h - gap),
-            label: Rect::new(size + 2 * gap, px(3), control_x - gap, h - px(12)),
+            label: Rect::new(gap * 2, px(3), control_x - gap, h - px(12)),
             buttons: controls,
-            scrub: Rect::new(size + 2 * gap, h - px(13), w - gap - px(1), h - px(1)),
+            scrub: Rect::new(gap * 2, h - px(13), w - gap - px(1), h - px(1)),
+            vertical: false,
         }
     }
 
-    fn scrub_fraction(self, x: i32) -> f64 {
-        (f64::from(x - self.scrub.left) / f64::from(self.scrub.width().max(1))).clamp(0.0, 1.0)
+    fn scrub_fraction(self, point: Point) -> f64 {
+        let (offset, length) = if self.vertical {
+            (self.scrub.bottom - point.y, self.scrub.height())
+        } else {
+            (point.x - self.scrub.left, self.scrub.width())
+        };
+        (f64::from(offset) / f64::from(length.max(1))).clamp(0.0, 1.0)
     }
 }
 
@@ -189,7 +250,7 @@ impl Default for Widget {
 impl Widget {
     pub fn holds(&self, pointer: Point) -> bool {
         self.frame.is_some_and(|(place, span, _, _)| {
-            span == place.bounds.width()
+            span == place.length()
                 && place.bounds.contains(pointer)
                 && unsafe {
                     GetAncestor(
@@ -240,8 +301,8 @@ impl Widget {
         let fraction = self
             .slide
             .update(opening, now, if settings.animate { 185 } else { 0 });
-        let width = target.bounds.width();
-        let span = (f64::from(width) * fraction).round() as i32;
+        let length = target.length();
+        let span = (f64::from(length) * fraction).round() as i32;
         if span == 0 {
             if !opening {
                 self.clear(now);
@@ -347,13 +408,17 @@ fn place(hwnd: HWND, placement: Placement, span: i32, alpha: u8, radius: i32) ->
         if rounded.is_null() {
             return false;
         }
-        if span < r.width() {
-            let left = if placement.from_right {
-                r.width() - span
+        if span < placement.length() {
+            let offset = if placement.from_end {
+                placement.length() - span
             } else {
                 0
             };
-            let mask = CreateRectRgn(left, 0, left + span, r.height() + 1);
+            let mask = if placement.vertical {
+                CreateRectRgn(0, offset, r.width() + 1, offset + span)
+            } else {
+                CreateRectRgn(offset, 0, offset + span, r.height() + 1)
+            };
             if mask.is_null() {
                 DeleteObject(rounded);
                 return false;
@@ -411,7 +476,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         ui.drag = Some(Drag {
                             generation: track.generation,
                             timeline,
-                            fraction: layout.scrub_fraction(pos.x),
+                            fraction: layout.scrub_fraction(pos),
                         });
                         unsafe {
                             SetCapture(hwnd);
@@ -435,7 +500,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_MOUSEMOVE => {
                 let ui = unsafe { &mut *state };
                 if let Some(drag) = &mut ui.drag {
-                    drag.fraction = client_layout(hwnd, ui.dpi).scrub_fraction(pos.x);
+                    drag.fraction = client_layout(hwnd, ui.dpi).scrub_fraction(pos);
                     unsafe { InvalidateRect(hwnd, null(), 0) };
                 }
                 return 0;
@@ -443,7 +508,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_LBUTTONUP => {
                 let ui = unsafe { &mut *state };
                 if let Some(drag) = ui.drag.take() {
-                    let fraction = client_layout(hwnd, ui.dpi).scrub_fraction(pos.x);
+                    let fraction = client_layout(hwnd, ui.dpi).scrub_fraction(pos);
                     (ui.control)(drag.generation, Action::Seek(drag.timeline.at(fraction)));
                 }
                 if unsafe { GetCapture() == hwnd } {
@@ -526,7 +591,7 @@ fn text(dc: HDC, label: &str, r: Rect, color: COLORREF, flags: u32) {
 fn artwork(dc: HDC, r: Rect, art: &Art) {
     let w = f64::from(art.width);
     let h = f64::from(art.height);
-    let scale = (f64::from(r.width()) / w).min(f64::from(r.height()) / h);
+    let scale = (f64::from(r.width()) / w).max(f64::from(r.height()) / h);
     let width = (w * scale).round() as i32;
     let height = (h * scale).round() as i32;
     let info = BITMAPINFO {
@@ -585,7 +650,11 @@ fn paint(hwnd: HWND, ui: &Ui) {
 }
 
 fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
-    let (base, backdrop, main, secondary, accent) = if ui.light {
+    let has_art = ui
+        .track
+        .as_ref()
+        .is_some_and(|track| track.details.art.is_some());
+    let (base, backdrop, main, secondary, accent) = if ui.light && !has_art {
         (0xf7f5f2, 0xe3e0dc, 0x2a2320, 0x675a52, 0x995d20)
     } else {
         (0x282323, 0x443934, 0xf8f2ec, 0xc1b3ad, 0xf5bb81)
@@ -593,7 +662,9 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
     fill(dc, Rect::new(0, 0, w, h), base);
     let Some(track) = &ui.track else { return };
     let layout = Layout::new(w, h, ui.dpi);
-    fill(dc, layout.art, backdrop);
+    if let Some(art) = &track.details.art {
+        artwork(dc, Rect::new(0, 0, w, h), art);
+    }
     let font = |height: i32| unsafe {
         CreateFontW(
             -height * ui.dpi as i32 / 96,
@@ -616,21 +687,16 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
     let icons = font(17);
     unsafe { SetBkMode(dc, TRANSPARENT as i32) };
     let previous = unsafe { SelectObject(dc, regular) };
-    if let Some(art) = &track.details.art {
-        artwork(dc, layout.art, art);
-    } else {
-        unsafe { SelectObject(dc, icons) };
-        text(dc, "♪", layout.art, accent, DT_CENTER | DT_VCENTER);
-        unsafe { SelectObject(dc, regular) };
-    }
     let title = if track.details.title.is_empty() {
         "Playing media"
     } else {
         &track.details.title
     };
-    if track.details.artist.is_empty() || layout.label.height() < 25 * ui.dpi as i32 / 96 {
+    if !layout.vertical
+        && (track.details.artist.is_empty() || layout.label.height() < 25 * ui.dpi as i32 / 96)
+    {
         text(dc, title, layout.label, main, DT_VCENTER);
-    } else {
+    } else if !layout.vertical {
         let mut first = layout.label;
         first.bottom = first.top + first.height() / 2 + 1;
         let mut second = layout.label;
@@ -653,27 +719,55 @@ fn paint_surface(dc: HDC, w: i32, h: i32, ui: &Ui) {
             DT_CENTER | DT_VCENTER,
         );
     }
-    let y = layout.scrub.top + layout.scrub.height() / 2;
     let weight = (2 * ui.dpi as i32 / 96).max(1);
-    let rail = Rect::new(layout.scrub.left, y, layout.scrub.right, y + weight);
+    let center = Point {
+        x: layout.scrub.left + layout.scrub.width() / 2,
+        y: layout.scrub.top + layout.scrub.height() / 2,
+    };
+    let rail = if layout.vertical {
+        Rect::new(
+            center.x,
+            layout.scrub.top,
+            center.x + weight,
+            layout.scrub.bottom,
+        )
+    } else {
+        Rect::new(
+            layout.scrub.left,
+            center.y,
+            layout.scrub.right,
+            center.y + weight,
+        )
+    };
     fill(dc, rail, backdrop);
     if let Some(timeline) = track.timeline {
         let fraction = ui
             .drag
             .as_ref()
             .map_or_else(|| timeline.fraction(Instant::now()), |d| d.fraction);
-        let x = rail.left + (fraction * f64::from(rail.width())).round() as i32;
-        fill(
-            dc,
-            Rect::new(rail.left, rail.top, x, rail.bottom),
-            if track.can_seek { accent } else { secondary },
-        );
+        let mut played = rail;
+        let knob = if layout.vertical {
+            let y = rail.bottom - (fraction * f64::from(rail.height())).round() as i32;
+            played.top = y;
+            Rect::new(
+                center.x - weight,
+                y - weight,
+                center.x + 2 * weight,
+                y + weight + 1,
+            )
+        } else {
+            let x = rail.left + (fraction * f64::from(rail.width())).round() as i32;
+            played.right = x;
+            Rect::new(
+                x - weight,
+                center.y - weight,
+                x + weight + 1,
+                center.y + 2 * weight,
+            )
+        };
+        fill(dc, played, if track.can_seek { accent } else { secondary });
         if track.can_seek {
-            fill(
-                dc,
-                Rect::new(x - weight, y - weight, x + weight + 1, y + 2 * weight),
-                accent,
-            );
+            fill(dc, knob, accent);
         }
     }
     unsafe {
@@ -806,7 +900,41 @@ mod tests {
             .unwrap()
             .bounds;
         assert!(left.top < right.top);
+        assert!(right.height() > right.width());
         assert!(right.right < bounds.left);
         assert_eq!(right.intersection(display), Some(right));
+    }
+
+    #[test]
+    fn a_vertical_island_uses_free_rail_space_for_its_player() {
+        let display = Rect::new(0, 0, 2880, 1800);
+        let bounds = Rect::new(2784, 0, 2880, 1800);
+        let bar = NativeBar {
+            edge: Edge::Right,
+            display,
+            bounds,
+        };
+        let island = Rect::new(2784, 378, 2880, 1422);
+        let above = placement(bar, Some(island), MediaSide::Left, 192).unwrap();
+        let below = placement(bar, Some(island), MediaSide::Right, 192).unwrap();
+        assert_eq!(above.bounds.left, bounds.left);
+        assert!(above.bounds.bottom < island.top);
+        assert_eq!(below.bounds.right, bounds.right);
+        assert!(below.bounds.top > island.bottom);
+        let layout = Layout::new(above.bounds.width(), above.bounds.height(), 192);
+        assert_eq!(
+            layout.scrub_fraction(Point {
+                x: layout.scrub.left,
+                y: layout.scrub.top
+            }),
+            1.0
+        );
+        assert_eq!(
+            layout.scrub_fraction(Point {
+                x: layout.scrub.left,
+                y: layout.scrub.bottom
+            }),
+            0.0
+        );
     }
 }

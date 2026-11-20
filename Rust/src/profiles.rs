@@ -109,10 +109,9 @@ fn template(text: &str, s: &Settings) -> Result<Profile, String> {
             )
             .replace("__RADIUS__", &s.radius.to_string())
             .replace("__TRANSPARENCY__", &s.transparency.to_string())
-            .replace("__TINT_OPACITY__", &opacity(s))
             .replace(
-                " TintOpacity=",
-                " TintLuminosityOpacity=\"0.64\" TintOpacity=",
+                "<AcrylicBrush TintColor=\"{ThemeResource SystemChromeMediumColor}\" TintOpacity=\"__TINT_OPACITY__\" FallbackColor=\"{ThemeResource SystemChromeLowColor}\" />",
+                &format!("<SolidColorBrush Color=\"{{ThemeResource SystemChromeMediumColor}}\" Opacity=\"{}\" />", opacity(s)),
             );
         if val.contains("__") {
             return Err(format!("Unresolved appearance value: {val}"));
@@ -161,15 +160,12 @@ fn taskbar(s: &Settings, joined: bool) -> Result<Profile, String> {
         rotation_guard(&mut profile);
     }
     let animate_icons = s.animate && (s.hover_lift != 0 || s.click_depth != 0);
-    if s.icon_size != 100 || animate_icons {
-        let base = f64::from(s.icon_size) / 100.0;
-        let mut motion = vec!["RenderTransformOrigin=0.5,0.5".into()];
-        if s.icon_size != 100 {
-            motion.push(format!(
-                "RenderTransform:=<CompositeTransform ScaleX=\"{base:.3}\" ScaleY=\"{base:.3}\" />"
-            ));
-        }
+    {
+        // Set the image dimensions in DIPs because the shell's default changes with orientation.
+        let size = f64::from(s.icon_size) * 24.0 / 100.0;
+        let mut motion = vec![format!("Width={size:.2}"), format!("Height={size:.2}")];
         if animate_icons {
+            motion.push("RenderTransformOrigin=0.5,0.5".into());
             let hover = 1.0 + 0.035 * f64::from(s.hover_lift);
             let pressed = if s.click_depth == 0 {
                 hover
@@ -195,7 +191,6 @@ fn taskbar(s: &Settings, joined: bool) -> Result<Profile, String> {
                         },
                     ),
                 ] {
-                    let scale = scale * base;
                     motion.push(format!("RenderTransform@{group}{state}:=<CompositeTransform ScaleX=\"{scale:.3}\" ScaleY=\"{scale:.3}\" TranslateY=\"{y}\" />"));
                 }
             }
@@ -419,11 +414,8 @@ mod tests {
                 ..Settings::default()
             };
             let reduced = taskbar(&settings, false).unwrap();
-            assert!(
-                reduced
-                    .values()
-                    .any(|v| v.starts_with("RenderTransform:=") && v.contains("ScaleX=\"0.800\""))
-            );
+            assert!(reduced.values().any(|value| value == "Width=19.20"));
+            assert!(reduced.values().any(|value| value == "Height=19.20"));
             assert!(!reduced.values().any(|v| v.starts_with("RenderTransform@")));
             let motion = taskbar(
                 &Settings {
@@ -437,8 +429,32 @@ mod tests {
                 motion
                     .values()
                     .any(|v| v.starts_with("RenderTransform@ActivePointerOver")
-                        && v.contains("ScaleX=\"0.940\""))
+                        && v.contains("ScaleX=\"1.175\""))
             );
+        }
+    }
+
+    #[test]
+    fn taskbar_transparency_controls_actual_brush_opacity() {
+        for island in [false, true] {
+            for (transparency, opacity) in [(0, "1.00"), (85, "0.15")] {
+                let settings = Settings {
+                    island,
+                    transparency,
+                    ..Settings::default()
+                };
+                let profile = taskbar(&settings, false).unwrap();
+                let index = if island { 8 } else { 0 };
+                let brush = &profile[&format!("controlStyles[{index}].styles[0]")];
+                assert!(brush.contains("<SolidColorBrush "));
+                assert!(brush.contains(&format!("Opacity=\"{opacity}\"")));
+                if island {
+                    assert!(
+                        profile["controlStyles[11].styles[0]"]
+                            .contains(&format!("Opacity=\"{opacity}\""))
+                    );
+                }
+            }
         }
     }
 
