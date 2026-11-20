@@ -17,9 +17,14 @@ internal sealed class AppearanceWindow : Form
     private readonly NumericUpDown _transparency = new() { Minimum = 0, Maximum = AppearanceOptions.MaxTransparency, Value = 40, Increment = 5, AccessibleName = "Transparency percentage" };
     private readonly NumericUpDown _hoverLift = new() { Minimum = 0, Maximum = AppearanceOptions.MaxHoverLift, Value = AppearanceOptions.DefaultHoverLift, AccessibleName = "Hover lift in pixels" };
     private readonly NumericUpDown _clickDepth = new() { Minimum = 0, Maximum = AppearanceOptions.MaxClickDepth, Value = AppearanceOptions.DefaultClickDepth, AccessibleName = "Click depth in pixels" };
+    private readonly ComboBox _activationZone = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Activation zone", Width = 190
+    };
     private AppearanceOptions _current = new(TaskbarLayout.Windows);
+    private RevealZone _currentZone;
     private bool _running;
-    private bool _savedWithMotion;
+    private bool _presetCurrent;
     private bool _busy;
     private bool _available;
 
@@ -35,7 +40,7 @@ internal sealed class AppearanceWindow : Form
         Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
         BackColor = SystemInformation.HighContrast ? SystemColors.Window : Color.FromArgb(245, 247, 252);
         ForeColor = _text;
-        ClientSize = new Size(686, 486);
+        ClientSize = new Size(686, 526);
         MaximizeBox = false;
 
         var root = new TableLayoutPanel
@@ -43,10 +48,11 @@ internal sealed class AppearanceWindow : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(24, 18, 24, 20),
             ColumnCount = 1,
-            RowCount = 6
+            RowCount = 7
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -64,12 +70,20 @@ internal sealed class AppearanceWindow : Form
         root.Controls.Add(CreateOptions(), 0, 1);
         root.Controls.Add(CreateSettingsRow("Corner &radius (px)", _radius, "&Transparency (%)", _transparency, 16), 0, 2);
         root.Controls.Add(CreateSettingsRow("&Hover lift (px)", _hoverLift, "C&lick depth (px)", _clickDepth, 8), 0, 3);
+        var activation = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+        activation.Controls.Add(new Label { Text = "Activation &zone", Width = 122, Margin = new Padding(0, 4, 6, 0) });
+        _activationZone.Items.AddRange(["Entire edge", "Center half", "Taskbar width"]);
+        _activationZone.SelectedIndex = 0;
+        _activationZone.Margin = Padding.Empty;
+        activation.Controls.Add(_activationZone);
+        activation.Controls.Add(new Label { Text = "Intelligent auto-hide", AutoSize = true, ForeColor = _muted, Margin = new Padding(10, 4, 0, 0) });
+        root.Controls.Add(activation, 0, 4);
 
         _status.ForeColor = _muted;
         _status.Margin = new Padding(0, 12, 0, 10);
         _status.MaximumSize = new Size(620, 0);
         _status.Text = "Reading the current layout…";
-        root.Controls.Add(_status, 0, 4);
+        root.Controls.Add(_status, 0, 5);
 
         var footer = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -82,7 +96,7 @@ internal sealed class AppearanceWindow : Form
         _apply.Margin = Padding.Empty;
         _apply.FlatStyle = FlatStyle.System;
         footer.Controls.Add(_apply, 1, 0);
-        root.Controls.Add(footer, 0, 5);
+        root.Controls.Add(footer, 0, 6);
 
         AcceptButton = _apply;
         Shown += async (_, _) => await RunAsync(null);
@@ -92,6 +106,7 @@ internal sealed class AppearanceWindow : Form
         _transparency.ValueChanged += (_, _) => RefreshButtons();
         _hoverLift.ValueChanged += (_, _) => RefreshButtons();
         _clickDepth.ValueChanged += (_, _) => RefreshButtons();
+        _activationZone.SelectedIndexChanged += (_, _) => RefreshButtons();
         _apply.Click += async (_, _) => await RunAsync(Selection);
         _restore.LinkClicked += async (_, _) => await RunAsync(new AppearanceOptions(TaskbarLayout.Windows));
         FormClosing += (_, args) => args.Cancel = _busy && args.CloseReason == CloseReason.UserClosing;
@@ -102,10 +117,10 @@ internal sealed class AppearanceWindow : Form
         var display = Screen.FromHandle(Handle).WorkingArea;
         var available = SizeFromClientSize(Size.Empty);
         var width = Math.Min(LogicalToDeviceUnits(686), display.Width - available.Width);
-        var height = Math.Min(LogicalToDeviceUnits(486), display.Height - available.Height);
+        var height = Math.Min(LogicalToDeviceUnits(526), display.Height - available.Height);
         ClientSize = new Size(width, height);
         MinimumSize = SizeFromClientSize(new Size(Math.Min(width, LogicalToDeviceUnits(590)),
-            Math.Min(height, LogicalToDeviceUnits(430))));
+            Math.Min(height, LogicalToDeviceUnits(462))));
         CenterToScreen();
         base.OnLoad(args);
     }
@@ -182,6 +197,8 @@ internal sealed class AppearanceWindow : Form
     private AppearanceOptions Selection => new(_island.Checked ? TaskbarLayout.Island : TaskbarLayout.FullWidth,
         (int)_radius.Value, (int)_transparency.Value, (int)_hoverLift.Value, (int)_clickDepth.Value);
 
+    private RevealZone SelectedZone => (RevealZone)_activationZone.SelectedIndex;
+
     private async Task RunAsync(AppearanceOptions? layout)
     {
         _busy = true;
@@ -192,9 +209,12 @@ internal sealed class AppearanceWindow : Form
             {
                 _status.Text = selection.Layout == TaskbarLayout.Windows ? "Restoring Windows appearance…" : "Applying the layout…";
                 await _styles.ApplyAsync(selection);
+                if (selection.Layout != TaskbarLayout.Windows)
+                    RevealZoneSettings.Save(SelectedZone);
             }
 
-            (_current, _running, _savedWithMotion) = await _styles.ReadAsync();
+            (_current, _running, _presetCurrent) = await _styles.ReadAsync();
+            _currentZone = RevealZoneSettings.Read();
             if (layout is null)
             {
                 _fullWidth.Checked = _current.Layout != TaskbarLayout.Island;
@@ -203,6 +223,7 @@ internal sealed class AppearanceWindow : Form
                 _transparency.Value = _current.Transparency;
                 _hoverLift.Value = _current.HoverLift;
                 _clickDepth.Value = _current.ClickDepth;
+                _activationZone.SelectedIndex = (int)_currentZone;
             }
             _available = true;
             _status.Text = _current.Layout switch
@@ -228,7 +249,8 @@ internal sealed class AppearanceWindow : Form
     {
         _island.Enabled = _fullWidth.Enabled = !_busy;
         _radius.Enabled = _transparency.Enabled = _hoverLift.Enabled = _clickDepth.Enabled = !_busy;
-        _apply.Enabled = _available && !_busy && (_current != Selection || !_running || !_savedWithMotion);
+        _activationZone.Enabled = !_busy;
+        _apply.Enabled = _available && !_busy && (_current != Selection || _currentZone != SelectedZone || !_running || !_presetCurrent);
         _restore.Enabled = _available && !_busy && _current.Layout != TaskbarLayout.Windows;
     }
 

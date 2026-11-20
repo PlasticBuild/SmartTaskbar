@@ -11,5 +11,6 @@
     <Compile Include="../SmartTaskbar/Models/TaskbarCoverage.cs" Link="TaskbarCoverage.cs" />
     <Compile Include="../SmartTaskbar/Models/TaskbarRetraction.cs" Link="TaskbarRetraction.cs" />
     <Compile Include="../SmartTaskbar/Models/TaskbarPosition.cs" Link="TaskbarPosition.cs" />
+    <Compile Include="../SmartTaskbar/Models/RevealZone.cs" Link="RevealZone.cs" />
   </ItemGroup>
 </Project>

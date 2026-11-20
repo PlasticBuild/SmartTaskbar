@@ -44,8 +44,6 @@ internal sealed class TaskbarStyles(string folder)
 
     private sealed record Profile(bool Enabled, JsonElement Settings)
     {
-        public bool HasMotionSettings => ReadMotionSetting("SmartTaskbarHoverLift=") is not null;
-
         public AppearanceOptions Options
         {
             get
@@ -60,7 +58,10 @@ internal sealed class TaskbarStyles(string folder)
                 {
                     var options = new AppearanceOptions(layout, radius, transparency, hover, click);
                     if (JsonElement.DeepEquals(Settings, BuildPreset(options)) ||
-                        JsonElement.DeepEquals(Settings, BuildPreset(options, includeMotion: false)))
+                        JsonElement.DeepEquals(Settings, BuildPreset(options, includeMenus: false)) ||
+                        JsonElement.DeepEquals(Settings, BuildPreset(options, includeClickThrough: false, includeMenus: false)) ||
+                        JsonElement.DeepEquals(Settings, BuildPreset(options, includeMotion: false,
+                            includeClickThrough: false, includeMenus: false)))
                         return options;
                 }
                 return new(TaskbarLayout.Custom);
@@ -80,43 +81,51 @@ internal sealed class TaskbarStyles(string folder)
         }
     }
 
-    public async Task<(AppearanceOptions Options, bool Running, bool SavedWithMotion)> ReadAsync()
+    private sealed record ShellProfile(string Id, Profile Profile);
+
+    public async Task<(AppearanceOptions Options, bool Running, bool CurrentPreset)> ReadAsync()
     {
-        var profile = await ReadProfileAsync();
-        return (profile.Options, IsHostRunning(rejectOtherInstall: false), profile.HasMotionSettings);
+        var (profile, shellProfiles) = await ReadProfilesAsync();
+        var options = profile.Options;
+        var current = options.Layout is TaskbarLayout.FullWidth or TaskbarLayout.Island &&
+            JsonElement.DeepEquals(profile.Settings, BuildPreset(options)) &&
+            shellProfiles.All(shell => shell.Profile.Enabled &&
+                JsonElement.DeepEquals(shell.Profile.Settings, ShellFlyoutStyles.Build(shell.Id, options)));
+        return (options, IsHostRunning(rejectOtherInstall: false),
+            current);
     }
 
     public async Task ApplyAsync(AppearanceOptions options)
     {
-        var previous = await ReadProfileAsync();
-        if (options.Layout == TaskbarLayout.Windows)
-        {
-            // Let the mod restore XAML properties live. Unloading it mid-session can remove Explorer's tray UI.
-            if (previous.Enabled)
-                await WritePresetAsync(WindowsPreset);
-            SetStartup(false);
-            return;
-        }
+        var (previous, shellProfiles) = await ReadProfilesAsync();
+        var styled = options.Layout != TaskbarLayout.Windows;
 
-        var preset = BuildPreset(options);
-        await CheckScopeAsync();
-        IsHostRunning(rejectOtherInstall: true);
+        if (styled)
+        {
+            await CheckScopeAsync();
+            IsHostRunning(rejectOtherInstall: true);
+        }
         try
         {
-            await WritePresetAsync(preset);
-            if (!previous.Enabled)
-                await RunCliAsync(["mod", "enable", ModId]);
-            await StartHostAsync();
-            var updated = await ReadProfileAsync();
+            // A neutral preset restores the shell's original properties without unloading the styler.
+            await ChangePresetAsync(ModId, previous, styled ? BuildPreset(options) : WindowsPreset, styled);
+            foreach (var shell in shellProfiles)
+                await ChangePresetAsync(shell.Id, shell.Profile, ShellFlyoutStyles.Build(shell.Id, options), styled);
+            if (styled)
+                await StartHostAsync();
+            var (updated, _) = await ReadProfilesAsync();
             if (updated.Options != options)
                 throw new InvalidOperationException("Windows did not retain the requested profile.");
-            SetStartup(true);
+            SetStartup(styled);
         }
         catch (Exception error) when (IsServiceError(error))
         {
             try
             {
                 await WritePresetAsync(previous.Enabled ? previous.Settings : WindowsPreset);
+                foreach (var shell in shellProfiles)
+                    await WritePresetAsync(shell.Profile.Enabled ? shell.Profile.Settings :
+                        ShellFlyoutStyles.Build(shell.Id, new(TaskbarLayout.Windows)), shell.Id);
             }
             catch (Exception rollback) when (IsServiceError(rollback))
             {
@@ -128,7 +137,7 @@ internal sealed class TaskbarStyles(string folder)
 
     public async Task ResumeAsync()
     {
-        var previous = await ReadProfileAsync();
+        var (previous, _) = await ReadProfilesAsync();
         if (previous.Options.Layout is not (TaskbarLayout.FullWidth or TaskbarLayout.Island))
             return;
 
@@ -136,16 +145,36 @@ internal sealed class TaskbarStyles(string folder)
         await StartHostAsync();
     }
 
-    private async Task<Profile> ReadProfileAsync()
+    private async Task<(Profile Taskbar, List<ShellProfile> Flyouts)> ReadProfilesAsync()
     {
         var data = await RunCliAsync(["mod", "list"]);
-        var mods = data.GetProperty("mods");
-        if (mods.GetArrayLength() != 1 || mods[0].GetProperty("id").GetString() != ModId ||
-            mods[0].GetProperty("version").GetString() != ModVersion)
-            throw new InvalidOperationException("The portable taskbar styling component is missing or has been changed.");
+        Profile? taskbar = null;
+        var flyouts = new List<ShellProfile>();
+        foreach (var item in data.GetProperty("mods").EnumerateArray())
+        {
+            var id = item.GetProperty("id").GetString();
+            var version = item.GetProperty("version").GetString();
+            if (id is null || (id == ModId ? version != ModVersion : !ShellFlyoutStyles.Matches(id, version)))
+                throw new InvalidOperationException("The portable styling components have been changed.");
 
-        var settings = await RunCliAsync(["mod", "settings", "get", ModId]);
-        return new Profile(mods[0].GetProperty("enabled").GetBoolean(), settings.GetProperty("settings"));
+            var settings = await RunCliAsync(["mod", "settings", "get", id]);
+            var profile = new Profile(item.GetProperty("enabled").GetBoolean(), settings.GetProperty("settings"));
+            if (id == ModId)
+                taskbar = profile;
+            else
+                flyouts.Add(new ShellProfile(id, profile));
+        }
+        return (taskbar ?? throw new InvalidOperationException("The taskbar styling component is missing."), flyouts);
+    }
+
+    private async Task ChangePresetAsync(string id, Profile previous, JsonElement preset, bool enabled)
+    {
+        if (!previous.Enabled && !enabled)
+            return;
+        if (!JsonElement.DeepEquals(previous.Settings, preset))
+            await WritePresetAsync(preset, id);
+        if (!previous.Enabled)
+            await RunCliAsync(["mod", "enable", id]);
     }
 
     private async Task CheckScopeAsync()
@@ -156,14 +185,28 @@ internal sealed class TaskbarStyles(string folder)
         var include = engine.GetProperty("include");
         var exclude = engine.GetProperty("exclude");
         var explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+        var paths = include.EnumerateArray().Select(value => value.GetString()).ToArray();
         if (settings.GetProperty("safeMode").GetBoolean() ||
-            include.GetArrayLength() != 1 ||
-            !string.Equals(include[0].GetString(), explorer, StringComparison.OrdinalIgnoreCase) ||
+            !paths.Contains(explorer, StringComparer.OrdinalIgnoreCase) || paths.Any(path => !IsKnownShellPath(path, explorer)) ||
             exclude.GetArrayLength() != 1 || exclude[0].GetString() != "*" ||
             engine.GetProperty("injectIntoCriticalProcesses").GetBoolean() ||
             engine.GetProperty("injectIntoIncompatiblePrograms").GetBoolean() ||
             engine.GetProperty("injectIntoGames").GetBoolean())
-            throw new InvalidOperationException("The portable styling engine must be scoped to Windows Explorer.");
+            throw new InvalidOperationException("The portable styling engine must be scoped to Windows Explorer and its menu hosts.");
+    }
+
+    private static bool IsKnownShellPath(string? path, string explorer)
+    {
+        if (string.Equals(path, explorer, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (string.Equals(path, Path.Combine(Environment.SystemDirectory, "ShellHost.exe"), StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var systemApps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SystemApps") +
+            Path.DirectorySeparatorChar;
+        return path is not null && path.StartsWith(systemApps, StringComparison.OrdinalIgnoreCase) &&
+            Path.GetFullPath(path).StartsWith(systemApps, StringComparison.OrdinalIgnoreCase) &&
+            Path.GetFileName(path) is "StartMenuExperienceHost.exe" or "SearchHost.exe" or "SearchApp.exe" or "ShellExperienceHost.exe";
     }
 
     private async Task StartHostAsync()
@@ -212,8 +255,8 @@ internal sealed class TaskbarStyles(string folder)
         }
     }
 
-    private Task<JsonElement> WritePresetAsync(JsonElement preset)
-        => RunCliAsync(["mod", "settings", "write", ModId, "-"], preset.GetRawText());
+    private Task<JsonElement> WritePresetAsync(JsonElement preset, string id = ModId)
+        => RunCliAsync(["mod", "settings", "write", id, "-"], preset.GetRawText());
 
     private static int ReadNumber(JsonElement settings, string key, string prefix, int fallback)
     {
@@ -224,7 +267,8 @@ internal sealed class TaskbarStyles(string folder)
         return fallback;
     }
 
-    private static JsonElement BuildPreset(AppearanceOptions options, bool includeMotion = true)
+    private static JsonElement BuildPreset(AppearanceOptions options, bool includeMotion = true, bool includeClickThrough = true,
+        bool includeMenus = true)
     {
         if (options.Layout is not (TaskbarLayout.FullWidth or TaskbarLayout.Island))
             throw new ArgumentOutOfRangeException(nameof(options));
@@ -238,15 +282,14 @@ internal sealed class TaskbarStyles(string folder)
             .Replace("__RADIUS__", radius.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("__TRANSPARENCY__", transparency.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("__TINT_OPACITY__", (1 - transparency / 100d).ToString("0.00", CultureInfo.InvariantCulture), StringComparison.Ordinal);
+        var settings = JsonSerializer.Deserialize<Dictionary<string, string>>(preset)!;
+        if (includeClickThrough && options.Layout == TaskbarLayout.Island)
+            settings["clickThroughTaskbar"] = "1";
         if (includeMotion)
-        {
-            var settings = JsonSerializer.Deserialize<Dictionary<string, string>>(preset)!;
             AddIconMotion(settings, options);
-            return JsonSerializer.SerializeToElement(settings);
-        }
-
-        using var json = JsonDocument.Parse(preset);
-        return json.RootElement.Clone();
+        if (includeMenus)
+            ShellFlyoutStyles.AddTaskbarMenus(settings, options);
+        return JsonSerializer.SerializeToElement(settings);
     }
 
     private static void AddIconMotion(Dictionary<string, string> settings, AppearanceOptions options)

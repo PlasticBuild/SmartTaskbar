@@ -39,9 +39,11 @@ namespace SmartTaskbar
         private readonly uint _taskbarCreated = RegisterWindowMessage("TaskbarCreated");
 
         private IntPtr _shell;
+        private int _shellProcess;
         private IntPtr _foreground;
         private IntPtr _locationHook;
         private AutoModeType _mode;
+        private RevealZone _revealZone;
         private bool _topologyDirty = true;
         private bool _autoHideEstablished;
         private bool _nativeTaskbarReady;
@@ -52,6 +54,9 @@ namespace SmartTaskbar
         private TaskbarInfo? _edgeReveal;
         private bool _edgeConfirmed;
         private IntPtr _visualPeek;
+        private IntPtr _foundFlyout;
+        private IntPtr _flyout;
+        private IntPtr _flyoutBar;
         private IntPtr _dismissBar;
         private long _dismissAfter;
 
@@ -107,6 +112,7 @@ namespace SmartTaskbar
             _visuals.Reset();
             ClearEdgeReveal();
             _visualPeek = IntPtr.Zero;
+            _flyout = _flyoutBar = IntPtr.Zero;
             _mode = mode;
             _autoHideEstablished = false;
             _nativeTaskbarReady = false;
@@ -212,11 +218,13 @@ namespace SmartTaskbar
             if (_shell != shell)
             {
                 _shell = shell;
+                GetWindowThreadProcessId(shell, out _shellProcess);
                 ClearEdgeReveal();
                 _dismissBar = IntPtr.Zero;
                 _autoHideEstablished = false;
                 _nativeTaskbarReady = false;
                 _visualPeek = IntPtr.Zero;
+                _flyout = _flyoutBar = IntPtr.Zero;
             }
 
             var displays = Array.ConvertAll(Screen.AllScreens, screen => screen.Bounds);
@@ -225,6 +233,7 @@ namespace SmartTaskbar
             if (_coverage.Length != _bars.Count)
                 _coverage = new TaskbarCoverage[_bars.Count];
             _edges.Clear();
+            _revealZone = RevealZoneSettings.Read();
             foreach (var bar in _bars)
             {
                 var band = bar.RevealBand();
@@ -253,6 +262,7 @@ namespace SmartTaskbar
                     _cursorSampler.Stop();
                     ClearEdgeReveal();
                     _visualPeek = IntPtr.Zero;
+                    _flyout = _flyoutBar = IntPtr.Zero;
                     _dismissBar = IntPtr.Zero;
                     if (_mode == AutoModeType.Dock && _autoHideEstablished)
                         SetAutoHide(false);
@@ -303,9 +313,14 @@ namespace SmartTaskbar
 
             var foreground = GetForegroundWindow();
             WatchForegroundLocation(foreground);
-            var shellInUse = MenuOpen || TaskbarHelper.IsTraySurface(foreground.GetClassName());
+            _foundFlyout = IntPtr.Zero;
             Array.Clear(_coverage);
             EnumWindows(_inspectWindow, IntPtr.Zero);
+            if (_foundFlyout == IntPtr.Zero && TaskbarHelper.IsForegroundShellFlyout(foreground, _shellProcess))
+                _foundFlyout = foreground;
+            var flyoutBar = UpdateFlyout();
+            var shellInUse = flyoutBar != IntPtr.Zero || MenuOpen ||
+                TaskbarHelper.IsTraySurface(foreground.GetClassName()) && !foreground.IsWindowInvisible();
 
             var covered = Array.Exists(_coverage, value => value != TaskbarCoverage.Clear);
             if (!covered)
@@ -315,7 +330,7 @@ namespace SmartTaskbar
             }
             _cursorSampler.Enabled = covered && !shellInUse;
 
-            var reveal = _visualPeek;
+            var reveal = flyoutBar != IntPtr.Zero ? flyoutBar : _visualPeek;
             var obscuredPeek = IntPtr.Zero;
             if (GetCursorPos(out var point))
             {
@@ -324,10 +339,15 @@ namespace SmartTaskbar
                     !_bars.Exists(bar => bar.Handle == _visualPeek && bar.ShownBounds.Contains(mouse)))
                 {
                     _visualPeek = IntPtr.Zero;
-                    reveal = IntPtr.Zero;
+                    reveal = flyoutBar;
                 }
 
-                if (shellInUse)
+                if (flyoutBar != IntPtr.Zero)
+                {
+                    // The flyout can extend across a display boundary. Keep its originating bar.
+                    reveal = flyoutBar;
+                }
+                else if (shellInUse)
                 {
                     var monitor = MonitorFromWindow(foreground, 0);
                     if (MenuOpen || monitor == IntPtr.Zero || _bars.Exists(bar => bar.ShownBounds.Contains(mouse)))
@@ -361,6 +381,26 @@ namespace SmartTaskbar
                 QueueUpdate();
         }
 
+        private IntPtr UpdateFlyout()
+        {
+            if (_foundFlyout == _flyout && (_flyoutBar == IntPtr.Zero || _bars.Exists(bar => bar.Handle == _flyoutBar)))
+                return _flyoutBar;
+
+            _flyout = _foundFlyout;
+            _flyoutBar = IntPtr.Zero;
+            if (_flyout == IntPtr.Zero)
+                return _flyoutBar;
+
+            var monitor = MonitorFromWindow(_flyout, 2);
+            _flyoutBar = _bars.Find(bar => bar.Monitor == monitor).Handle;
+            var owner = GetWindow(_flyout, 4);
+            if (_bars.Exists(bar => bar.Handle == owner))
+                _flyoutBar = owner;
+            else if (_visualPeek != IntPtr.Zero)
+                _flyoutBar = _visualPeek;
+            return _flyoutBar;
+        }
+
         private bool InspectWindow(IntPtr window, IntPtr parameter)
         {
             const int ExtendedStyle = -20;
@@ -371,6 +411,12 @@ namespace SmartTaskbar
                 return true;
 
             var windowClass = window.GetClassName();
+            if (TaskbarHelper.IsVisibleFlyout(window, windowClass, _shellProcess))
+            {
+                if (_foundFlyout == IntPtr.Zero || window == _foreground)
+                    _foundFlyout = window;
+                return true;
+            }
             if (TaskbarHelper.IsDesktop(windowClass) || TaskbarHelper.IsTraySurface(windowClass) ||
                 (GetWindowStyle(window, ExtendedStyle) & (ToolWindow | NoActivate)) != 0)
                 return true;
@@ -422,6 +468,9 @@ namespace SmartTaskbar
             foreach (var (bar, band) in _edges)
             {
                 if (!band.Contains(cursor) || _coverage[_bars.IndexOf(bar)] == TaskbarCoverage.Clear)
+                    continue;
+                var island = _revealZone == RevealZone.VisibleTaskbar ? _visuals.OpenIslandBounds(bar.Handle) : null;
+                if (!bar.LimitRevealBand(band, _revealZone, island).Contains(cursor))
                     continue;
 
                 if (_dwell.IsReady(bar.Handle, Environment.TickCount64))

@@ -1,6 +1,7 @@
 using System.Drawing;
 using SmartTaskbar;
 
+var passed = 0;
 var upper = new Rectangle(-200, -1440, 2560, 1440);
 var lower = new Rectangle(0, 0, 1920, 1080);
 var upperBar = new TaskbarInfo((IntPtr)10, (IntPtr)1, upper,
@@ -28,11 +29,22 @@ Expect(band.Contains(400, -24) && !band.Contains(400, 0) && !band.Contains(400, 
 Expect(lowerBar.RevealBand() == new Rectangle(0, 1064, 1920, 16),
     "The lower exterior edge gets its own reveal band");
 Expect(band.Contains(-180, -24), "The unshared portion of an offset monitor can also reveal the bar");
+var island = new Rectangle(360, -151, 1360, 151);
+Expect(upperBar.LimitRevealBand(band, RevealZone.EntireEdge, island) == band,
+    "Entire edge preserves the original activation band");
+Expect(upperBar.LimitRevealBand(band, RevealZone.CenterHalf, island) == new Rectangle(440, -48, 1280, 48),
+    "Center half limits only the long axis of an offset horizontal bar");
+Expect(upperBar.LimitRevealBand(band, RevealZone.VisibleTaskbar, island) == new Rectangle(360, -48, 1360, 48),
+    "Taskbar-width activation follows the island but keeps the seam depth");
+Expect(upperBar.LimitRevealBand(band, RevealZone.VisibleTaskbar, null) == band,
+    "Taskbar-width activation works with the initial or full-width layout");
 
 var leftBar = new TaskbarInfo((IntPtr)30, (IntPtr)1, upper,
     new Rectangle(-200, -1440, 80, 1440), TaskbarPosition.Left);
 Expect(leftBar.RevealBand() == new Rectangle(-200, -1440, 26, 1440),
     "A left-side taskbar can reveal from its outer edge");
+Expect(leftBar.LimitRevealBand(leftBar.RevealBand(), RevealZone.CenterHalf, null) == new Rectangle(-200, -1080, 26, 720),
+    "Center half limits the height of a vertical activation band");
 var topBar = new TaskbarInfo((IntPtr)40, (IntPtr)2, lower, new Rectangle(0, 0, 1920, 48), TaskbarPosition.Top);
 Expect(topBar.RevealBand() == new Rectangle(0, 0, 1920, 16),
     "A top-edge bar can reveal from the lower side of a seam");
@@ -96,10 +108,11 @@ Expect(dwell.TryRequestReveal(2180) && !dwell.TryRequestReveal(3000),
 Expect(!dwell.IsReady(upperBar.Handle, 3010) && dwell.TryRequestReveal(3190),
     "A new taskbar gets its own reveal attempts");
 
-Console.WriteLine("33 taskbar geometry and animation checks passed.");
+Console.WriteLine($"{passed} taskbar geometry and animation checks passed.");
 
-static void Expect(bool condition, string message)
+void Expect(bool condition, string message)
 {
     if (!condition)
         throw new InvalidOperationException(message);
+    passed++;
 }

@@ -29,9 +29,18 @@ if (!$setup.WaitForExit(120000) -or $setup.ExitCode -ne 0) {
 
 $cli = Join-Path $portable 'windhawk-cli.exe'
 try {
+    $systemApps = Join-Path $env:SystemRoot 'SystemApps'
+    $shellIncludes = @((Join-Path $env:SystemRoot 'explorer.exe'), (Join-Path ([Environment]::SystemDirectory) 'ShellHost.exe'))
+    $shellNames = @('StartMenuExperienceHost.exe', 'SearchHost.exe', 'SearchApp.exe', 'ShellExperienceHost.exe')
+    foreach ($directory in (Get-ChildItem -LiteralPath $systemApps -Directory)) {
+        foreach ($name in $shellNames) {
+            $hostPath = Join-Path $directory.FullName $name
+            if (Test-Path -LiteralPath $hostPath -PathType Leaf) { $shellIncludes += $hostPath }
+        }
+    }
     $settings = @(
         @('engine.exclude', '*'),
-        @('engine.include', (Join-Path $env:SystemRoot 'explorer.exe')),
+        @('engine.include', ($shellIncludes -join ',')),
         @('hideTrayIcon', 'true'),
         @('disableUpdateCheck', 'true')
     )
@@ -39,8 +48,16 @@ try {
         & $cli --app-root $portable app settings set --confirm-app-restart @setting
         if ($LASTEXITCODE -ne 0) { throw "Could not set $($setting[0])." }
     }
-    & $cli --app-root $portable mod install windows-11-taskbar-styler 1.11.2 --disabled
-    if ($LASTEXITCODE -ne 0) { throw 'Could not install Windows 11 Taskbar Styler.' }
+    $modules = @(
+        @('windows-11-taskbar-styler', '1.11.2'),
+        @('windows-11-start-menu-styler', '1.8'),
+        @('windows-11-notification-center-styler', '1.8'),
+        @('shell-flyout-positions', '1.3.1')
+    )
+    foreach ($module in $modules) {
+        & $cli --app-root $portable mod install @module --disabled
+        if ($LASTEXITCODE -ne 0) { throw "Could not install $($module[0])." }
+    }
 }
 finally {
     $engine = Get-Process -Name windhawk -ErrorAction SilentlyContinue |

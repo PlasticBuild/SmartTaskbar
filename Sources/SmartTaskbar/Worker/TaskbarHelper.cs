@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace SmartTaskbar
 {
     using static Fun;
@@ -159,6 +161,49 @@ namespace SmartTaskbar
         public static bool IsDesktop(string windowClass) => windowClass is "Progman" or "WorkerW";
 
         public static bool IsTraySurface(string windowClass) => windowClass is PrimaryClass or SecondaryClass
-            or "TaskListThumbnailWnd" or "Windows.UI.Core.CoreWindow" or "XamlExplorerHostIslandWindow";
+            or "Windows.UI.Core.CoreWindow" or "XamlExplorerHostIslandWindow" || IsFlyoutClass(windowClass);
+
+        private static bool IsFlyoutClass(string windowClass) => windowClass is
+            "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow" or "TaskListThumbnailWnd"
+            or "TaskListOverlayWnd" or "ControlCenterWindow" or "NotificationCenterWindow";
+
+        public static bool IsVisibleFlyout(IntPtr window, string windowClass, int shellProcess)
+        {
+            if (IsFlyoutClass(windowClass))
+                return true;
+
+            if (shellProcess == 0 || windowClass is not ("#32768" or "Xaml_WindowedPopupClass" or "XamlExplorerHostIslandWindow") ||
+                GetWindowThreadProcessId(window, out var ownerProcess) == 0 || ownerProcess != shellProcess)
+                return false;
+            // Tray tooltips may be owned by the taskbar too, but don't participate in menu focus.
+            const int ExtendedStyle = -20;
+            const int NoActivate = 0x08000000;
+            if (windowClass == "Xaml_WindowedPopupClass" && (GetWindowStyle(window, ExtendedStyle) & NoActivate) != 0)
+                return false;
+
+            const uint OwnerWindow = 4;
+            var owner = GetWindow(window, OwnerWindow);
+            var ownerClass = owner.GetClassName();
+            return ownerClass is PrimaryClass or SecondaryClass ||
+                IsFlyoutClass(ownerClass) && !owner.IsWindowInvisible();
+        }
+
+        public static bool IsForegroundShellFlyout(IntPtr window, int shellProcess)
+        {
+            if (window.GetClassName() is not ("Windows.UI.Core.CoreWindow" or "XamlExplorerHostIslandWindow") ||
+                window.IsWindowInvisible() || GetWindowThreadProcessId(window, out var processId) == 0)
+                return false;
+            if (processId == shellProcess)
+                return true;
+            try
+            {
+                using var process = Process.GetProcessById(processId);
+                return process.ProcessName is "ShellHost" or "ShellExperienceHost" or "StartMenuExperienceHost" or "SearchHost";
+            }
+            catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                return false;
+            }
+        }
     }
 }

@@ -54,10 +54,16 @@ namespace SmartTaskbar
         internal static extern IntPtr WindowFromPhysicalPoint(TagPoint point);
 
         [DllImport("user32.dll")]
+        internal static extern IntPtr GetWindow(IntPtr window, uint command);
+
+        [DllImport("user32.dll")]
         internal static extern int GetWindowRgn(IntPtr hwnd, IntPtr region);
 
         [DllImport("user32.dll")]
         internal static extern int GetWindowRgnBox(IntPtr hwnd, out TagRect bounds);
+
+        [DllImport("gdi32.dll")]
+        internal static extern int GetRgnBox(IntPtr region, out TagRect bounds);
 
         [DllImport("user32.dll")]
         internal static extern int SetWindowRgn(IntPtr hwnd, IntPtr region, [MarshalAs(UnmanagedType.Bool)] bool redraw);

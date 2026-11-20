@@ -35,6 +35,28 @@ namespace SmartTaskbar
             };
         }
 
+        public Rectangle LimitRevealBand(Rectangle band, RevealZone zone, Rectangle? island)
+        {
+            var horizontal = Edge is TaskbarPosition.Top or TaskbarPosition.Bottom;
+            if (zone == RevealZone.VisibleTaskbar && island is { } shape)
+            {
+                var limited = Rectangle.Intersect(band, horizontal
+                    ? new Rectangle(shape.X, band.Y, shape.Width, band.Height)
+                    : new Rectangle(band.X, shape.Y, band.Width, shape.Height));
+                return limited.IsEmpty ? band : limited;
+            }
+            if (zone != RevealZone.CenterHalf)
+                return band;
+
+            if (horizontal)
+            {
+                var width = Math.Max(1, band.Width / 2);
+                return new Rectangle(band.X + (band.Width - width) / 2, band.Y, width, band.Height);
+            }
+            var height = Math.Max(1, band.Height / 2);
+            return new Rectangle(band.X, band.Y + (band.Height - height) / 2, band.Width, height);
+        }
+
         public TaskbarCoverage CoverageFrom(Rectangle window, bool maximized, bool fillsOwnDisplay)
         {
             if (maximized && !fillsOwnDisplay)

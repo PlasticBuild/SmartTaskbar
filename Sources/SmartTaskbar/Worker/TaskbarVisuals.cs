@@ -35,6 +35,9 @@ namespace SmartTaskbar
             _trays = bars.Select(bar => new Tray(bar)).ToArray();
         }
 
+        public Rectangle? OpenIslandBounds(IntPtr window)
+            => Array.Find(_trays, tray => tray.Bar.Handle == window)?.Region?.OpenIslandBounds;
+
         // Returns true while the recovery process is still starting.
         public bool Apply(TaskbarCoverage[] coverage, IntPtr revealed, IntPtr obscuredPeek, long now)
         {
@@ -99,6 +102,8 @@ namespace SmartTaskbar
                     tray.Pixels = tray.Depth;
                     tray.Clipped = false;
                 }
+                if (!tray.Clipped)
+                    tray.Region!.RefreshOpenShape();
                 tray.Animation.SetVisible(visible, now);
 
                 // Explorer may replace the region after a settings or display change.
@@ -126,7 +131,7 @@ namespace SmartTaskbar
                 var pixels = (int)Math.Round(tray.Animation.FractionAt(now) * tray.Depth);
                 if (pixels >= tray.Depth)
                 {
-                    if (tray.Clipped && !tray.Region!.Restore())
+                    if (tray.Clipped && !tray.Region!.Restore(onlyIfStillClipped: true))
                     {
                         CancelChanges();
                         return;
@@ -172,7 +177,7 @@ namespace SmartTaskbar
                 {
                     if (_recovery is not null && !region.RestorePeek(_recovery.PeekPromotion(tray.Bar.Handle)))
                         _recovery.RequestRestore();
-                    if (tray.Clipped && !region.Restore())
+                    if (tray.Clipped && !region.Restore(onlyIfStillClipped: true))
                         _recovery?.RequestRestore();
                     region.Dispose();
                     tray.Region = null;

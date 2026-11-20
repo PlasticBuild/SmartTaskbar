@@ -19,6 +19,9 @@ namespace SmartTaskbar
         private static readonly IntPtr NotTopmost = new(-2);
 
         private IntPtr _original = original;
+        private Rectangle _openBounds;
+        private Rectangle? _lastClip;
+        private bool _externalDesktopShape;
 
         public static ExplorerTaskbarRegion? Capture(IntPtr window)
         {
@@ -32,7 +35,12 @@ namespace SmartTaskbar
 
             var type = GetWindowRgn(window, original);
             if (type > EmptyRegion)
-                return new ExplorerTaskbarRegion(window, processId, original);
+            {
+                var saved = new ExplorerTaskbarRegion(window, processId, original);
+                if (GetRgnBox(original, out var shape) > EmptyRegion)
+                    saved.SetOpenBounds(shape.ToRectangle());
+                return saved;
+            }
 
             DeleteObject(original);
             return type == NoRegion && IsWindowVisible(window)
@@ -55,10 +63,52 @@ namespace SmartTaskbar
                 DeleteObject(region);
                 return false;
             }
-            return SetRegion(region);
+            var kind = GetRgnBox(region, out var clip);
+            if (!SetRegion(region))
+                return false;
+            _lastClip = kind == EmptyRegion ? Rectangle.Empty : clip.ToRectangle();
+            return true;
         }
 
         public bool IsEmpty() => GetWindowRgnBox(window, out _) == EmptyRegion;
+
+        public Rectangle? OpenIslandBounds => _externalDesktopShape && GetWindowRect(window, out var rect)
+            ? new Rectangle(rect.left + _openBounds.X, rect.top + _openBounds.Y, _openBounds.Width, _openBounds.Height)
+            : null;
+
+        public void RefreshOpenShape()
+        {
+            var type = GetWindowRgnBox(window, out var current);
+            if (type == EmptyRegion)
+                return;
+
+            var bounds = type == NoRegion ? Rectangle.Empty : current.ToRectangle();
+            if (bounds == _openBounds && (type == NoRegion) == (_original == IntPtr.Zero))
+                return;
+
+            var region = IntPtr.Zero;
+            if (type != NoRegion)
+            {
+                region = CreateRectRgn(0, 0, 0, 0);
+                if (region == IntPtr.Zero)
+                    return;
+                if (GetWindowRgn(window, region) <= EmptyRegion)
+                {
+                    DeleteObject(region);
+                    return;
+                }
+            }
+            Dispose();
+            _original = region;
+            SetOpenBounds(bounds);
+        }
+
+        private void SetOpenBounds(Rectangle bounds)
+        {
+            _openBounds = bounds;
+            _externalDesktopShape = !bounds.IsEmpty && GetWindowRect(window, out var raw) &&
+                raw.ToRectangle().Height == bounds.Height && raw.ToRectangle().Width > bounds.Width;
+        }
 
         public void RaiseForPeek(EventWaitHandle promotion)
         {
@@ -82,11 +132,22 @@ namespace SmartTaskbar
             return true;
         }
 
-        public bool Restore()
+        public bool Restore(bool onlyIfStillClipped = false)
         {
             if (!IsSameWindow())
                 return true;
-            if (_original == IntPtr.Zero)
+            if (onlyIfStillClipped)
+            {
+                var kind = GetWindowRgnBox(window, out var current);
+                // Windows may report an arbitrary origin for a zero-area region.
+                if (kind != EmptyRegion && (kind == NoRegion || current.ToRectangle() != _lastClip))
+                    return true;
+            }
+
+            _lastClip = null;
+            // An Island region is supplied by the styling component. Clear the animation mask
+            // so Explorer can apply its current layout, including changes made while hidden.
+            if (_original == IntPtr.Zero || _externalDesktopShape)
                 return SetRegion(IntPtr.Zero);
 
             var region = CreateRectRgn(0, 0, 0, 0);
