@@ -304,11 +304,8 @@ namespace SmartTaskbar
             var foreground = GetForegroundWindow();
             WatchForegroundLocation(foreground);
             var shellInUse = MenuOpen || TaskbarHelper.IsTraySurface(foreground.GetClassName());
-            if (!shellInUse)
-            {
-                Array.Clear(_coverage);
-                EnumWindows(_inspectWindow, IntPtr.Zero);
-            }
+            Array.Clear(_coverage);
+            EnumWindows(_inspectWindow, IntPtr.Zero);
 
             var covered = Array.Exists(_coverage, value => value != TaskbarCoverage.Clear);
             if (!covered)
@@ -318,23 +315,42 @@ namespace SmartTaskbar
             }
             _cursorSampler.Enabled = covered && !shellInUse;
 
-            // Keep the taskbar while the user is already pointing at its controls.
-            if (covered && _visualPeek == IntPtr.Zero && GetCursorPos(out var point))
+            var reveal = _visualPeek;
+            if (GetCursorPos(out var point))
             {
                 var mouse = new Point(point.x, point.y);
-                for (var index = 0; index < _bars.Count; index++)
+                if (_visualPeek != IntPtr.Zero &&
+                    !_bars.Exists(bar => bar.Handle == _visualPeek && bar.ShownBounds.Contains(mouse)))
                 {
-                    var bar = _bars[index];
-                    if (_coverage[index] != TaskbarCoverage.Clear && bar.ShownBounds.Contains(mouse)
-                        && WindowAt(mouse) == bar.Handle)
+                    _visualPeek = IntPtr.Zero;
+                    reveal = IntPtr.Zero;
+                }
+
+                if (shellInUse)
+                {
+                    var monitor = MonitorFromWindow(foreground, 0);
+                    if (MenuOpen || monitor == IntPtr.Zero || _bars.Exists(bar => bar.ShownBounds.Contains(mouse)))
+                        monitor = MonitorFromPoint(point, 0);
+
+                    // A tray or Start menu interaction should not reveal a full display's other bar.
+                    reveal = _bars.Find(bar => bar.Monitor == monitor).Handle;
+                }
+                else if (covered && _visualPeek == IntPtr.Zero)
+                {
+                    for (var index = 0; index < _bars.Count; index++)
                     {
-                        _visualPeek = bar.Handle;
-                        break;
+                        var bar = _bars[index];
+                        if (_coverage[index] != TaskbarCoverage.Clear && bar.ShownBounds.Contains(mouse)
+                            && WindowAt(mouse) == bar.Handle)
+                        {
+                            reveal = _visualPeek = bar.Handle;
+                            break;
+                        }
                     }
                 }
             }
 
-            if (_visuals.Apply(_coverage, _visualPeek, shellInUse, now))
+            if (_visuals.Apply(_coverage, reveal, now))
                 QueueUpdate();
         }
 
@@ -354,15 +370,30 @@ namespace SmartTaskbar
 
             var rect = bounds.ToRectangle();
             var maximized = IsZoomed(window);
-            var activeDisplay = maximized && window == _foreground ? MonitorFromWindow(window, 2) : IntPtr.Zero;
+            var windowDisplay = maximized ? MonitorFromWindow(window, 2) : IntPtr.Zero;
             for (var index = 0; index < _bars.Count; index++)
             {
                 var bar = _bars[index];
-                var value = bar.CoverageFrom(rect, maximized, activeDisplay == bar.Monitor);
+                var value = bar.CoverageFrom(rect, maximized, windowDisplay == bar.Monitor);
+                if (value != TaskbarCoverage.Clear && (maximized || value == TaskbarCoverage.Fullscreen)
+                    && !IsWindowExposed(window, Rectangle.Intersect(rect, bar.Display)))
+                    continue;
                 if (value > _coverage[index])
                     _coverage[index] = value;
             }
             return true;
+        }
+
+        private static bool IsWindowExposed(IntPtr window, Rectangle visible)
+        {
+            if (visible.Width <= 0 || visible.Height <= 0)
+                return false;
+
+            ReadOnlySpan<(int X, int Y)> samples = [(2, 2), (1, 1), (3, 1), (1, 3), (3, 3)];
+            foreach (var (x, y) in samples)
+                if (WindowAt(new Point(visible.Left + visible.Width * x / 4, visible.Top + visible.Height * y / 4)) == window)
+                    return true;
+            return false;
         }
 
         private void SampleVisualEdges()
@@ -398,7 +429,7 @@ namespace SmartTaskbar
         }
 
         private static IntPtr WindowAt(Point point)
-            => GetAncestor(WindowFromPoint(new TagPoint { x = point.X, y = point.Y }), TaskbarHelper.RootWindow);
+            => GetAncestor(WindowFromPhysicalPoint(new TagPoint { x = point.X, y = point.Y }), TaskbarHelper.RootWindow);
 
         private void SampleTaskbarEdges()
         {

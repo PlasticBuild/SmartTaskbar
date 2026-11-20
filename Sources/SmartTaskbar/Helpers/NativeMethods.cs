@@ -37,6 +37,22 @@ namespace SmartTaskbar
         [DllImport("user32.dll")]
         internal static extern int GetSystemMetrics(int index);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+        [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool SetWorkArea(uint action, uint parameter, ref TagRect bounds, uint flags);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height,
+            uint flags);
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr WindowFromPhysicalPoint(TagPoint point);
+
         [DllImport("user32.dll")]
         internal static extern int GetWindowRgn(IntPtr hwnd, IntPtr region);
 

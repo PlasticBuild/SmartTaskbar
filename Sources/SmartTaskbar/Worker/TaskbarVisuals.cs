@@ -10,6 +10,7 @@ namespace SmartTaskbar
             public int Depth { get; } = bar.Edge is TaskbarPosition.Top or TaskbarPosition.Bottom
                 ? bar.ShownBounds.Height : bar.ShownBounds.Width;
             public ExplorerTaskbarRegion? Region { get; set; }
+            public TaskbarWorkspace? Workspace { get; set; }
             public TaskbarRetraction Animation = new();
             public int Pixels = -1;
             public bool Clipped;
@@ -35,16 +36,13 @@ namespace SmartTaskbar
         }
 
         // Returns true while the recovery process is still starting.
-        public bool Apply(TaskbarCoverage[] coverage, IntPtr revealed, bool showAll, long now)
+        public bool Apply(TaskbarCoverage[] coverage, IntPtr revealed, long now)
         {
             if (_failed || _trays.Length != coverage.Length || _trays.Length == 0)
                 return false;
 
             if (_recovery is null)
             {
-                if (showAll || Array.TrueForAll(coverage, value => value == TaskbarCoverage.Clear))
-                    return false;
-
                 foreach (var tray in _trays)
                 {
                     tray.Region = ExplorerTaskbarRegion.Capture(tray.Bar.Handle);
@@ -53,6 +51,7 @@ namespace SmartTaskbar
                         CancelChanges();
                         return false;
                     }
+                    tray.Workspace = TaskbarWorkspace.Capture(tray.Bar);
                 }
                 _recovery = TaskbarRecovery.Start(_trays.Select(tray => tray.Bar));
                 if (_recovery is null)
@@ -74,7 +73,13 @@ namespace SmartTaskbar
             for (var index = 0; index < _trays.Length; index++)
             {
                 var tray = _trays[index];
-                var visible = showAll || coverage[index] == TaskbarCoverage.Clear || tray.Bar.Handle == revealed;
+                if (tray.Workspace is { } workspace && !workspace.Expand())
+                {
+                    CancelChanges();
+                    return false;
+                }
+
+                var visible = coverage[index] == TaskbarCoverage.Clear || tray.Bar.Handle == revealed;
                 if (visible && tray.Clipped && tray.Pixels == 0 && !tray.Region!.IsEmpty())
                 {
                     // Explorer has already brought the tray back, such as when leaving a fullscreen app.
@@ -139,8 +144,13 @@ namespace SmartTaskbar
         public void Reset()
         {
             _frames.Stop();
+            var restoreWorkArea = _recovery is not null && !Fun.IsAutoHide();
             foreach (var tray in _trays)
             {
+                if (restoreWorkArea && tray.Workspace is { } workspace && !workspace.Restore())
+                    _recovery?.RequestRestore();
+                tray.Workspace = null;
+
                 if (tray.Region is { } region)
                 {
                     if (tray.Clipped && !region.Restore())

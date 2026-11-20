@@ -35,15 +35,35 @@ namespace SmartTaskbar
             };
         }
 
-        public TaskbarCoverage CoverageFrom(Rectangle window, bool maximized, bool activeOnDisplay)
+        public TaskbarCoverage CoverageFrom(Rectangle window, bool maximized, bool fillsOwnDisplay)
         {
+            if (maximized && !fillsOwnDisplay)
+                return TaskbarCoverage.Clear;
+
             if (window.Contains(Display))
                 return TaskbarCoverage.Fullscreen;
 
-            if (maximized)
-                return activeOnDisplay ? TaskbarCoverage.Overlap : TaskbarCoverage.Clear;
+            return maximized || ShownBounds.IntersectsWith(window) ? TaskbarCoverage.Overlap : TaskbarCoverage.Clear;
+        }
 
-            return ShownBounds.IntersectsWith(window) ? TaskbarCoverage.Overlap : TaskbarCoverage.Clear;
+        public Rectangle ReclaimTaskbarStrip(Rectangle work)
+        {
+            if (!Display.Contains(work))
+                return work;
+
+            // Other reserved edges may belong to another Windows appbar.
+            return Edge switch
+            {
+                TaskbarPosition.Bottom when work.Bottom == ShownBounds.Top =>
+                    Rectangle.FromLTRB(work.Left, work.Top, work.Right, Display.Bottom),
+                TaskbarPosition.Top when work.Top == ShownBounds.Bottom =>
+                    Rectangle.FromLTRB(work.Left, Display.Top, work.Right, work.Bottom),
+                TaskbarPosition.Left when work.Left == ShownBounds.Right =>
+                    Rectangle.FromLTRB(Display.Left, work.Top, work.Right, work.Bottom),
+                TaskbarPosition.Right when work.Right == ShownBounds.Left =>
+                    Rectangle.FromLTRB(work.Left, work.Top, Display.Right, work.Bottom),
+                _ => work
+            };
         }
 
         public static Rectangle Dock(Rectangle actual, Rectangle display, TaskbarPosition edge)

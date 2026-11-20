@@ -74,6 +74,7 @@ namespace SmartTaskbar
                 return;
 
             var saved = new List<ExplorerTaskbarRegion>();
+            var workspaces = new List<TaskbarWorkspace>();
             try
             {
                 using var parent = Process.GetProcessById(pid);
@@ -90,18 +91,33 @@ namespace SmartTaskbar
                 };
 
                 Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+                var bars = new List<TaskbarInfo>();
+                var shell = Fun.FindWindow(TaskbarHelper.PrimaryClass, null);
+                var displays = Array.ConvertAll(Screen.AllScreens, screen => screen.Bounds);
+                TaskbarHelper.ReadTaskbars(shell, displays, bars);
+
                 for (var index = 4; index < args.Length; index++)
                 {
                     if (!long.TryParse(args[index], CultureInfo.InvariantCulture, out var handle)
                         || ExplorerTaskbarRegion.Capture(new IntPtr(handle)) is not { } region)
                         return;
                     saved.Add(region);
+                    var bar = bars.Find(bar => bar.Handle.ToInt64() == handle);
+                    if (bar.Handle == IntPtr.Zero)
+                        return;
+                    if (TaskbarWorkspace.Capture(bar) is { } workspace)
+                        workspaces.Add(workspace);
                 }
 
                 ready.Set();
                 if (WaitHandle.WaitAny([cancelled, restore, parentExit]) != 0)
+                {
+                    if (!Fun.IsAutoHide())
+                        foreach (var workspace in workspaces)
+                            workspace.Restore();
                     foreach (var region in saved)
                         region.Restore();
+                }
             }
             catch (Exception error) when (error is ArgumentException or InvalidOperationException or IOException or
                 Win32Exception or WaitHandleCannotBeOpenedException or UnauthorizedAccessException)

@@ -47,16 +47,25 @@ Expect(upperBar.CoverageFrom(spanning, false, false) == TaskbarCoverage.Overlap
 var upperWorkArea = Rectangle.FromLTRB(upper.Left, upper.Top, upper.Right, upperBar.ShownBounds.Top);
 Expect(upperBar.CoverageFrom(upperWorkArea, true, true) == TaskbarCoverage.Overlap
     && lowerBar.CoverageFrom(upperWorkArea, true, false) == TaskbarCoverage.Clear,
-    "Maximizing hides only that display's taskbar even if the window stops above it");
+    "A visible maximized window hides only its own display's taskbar");
 Expect(upperBar.CoverageFrom(upperWorkArea, true, false) == TaskbarCoverage.Clear,
-    "An inactive maximized window that leaves the taskbar's space clear does not keep it hidden");
+    "An occluded maximized window does not hide a taskbar");
 Expect(upperBar.CoverageFrom(Rectangle.FromLTRB(0, -250, 800, -151), false, false) == TaskbarCoverage.Clear,
     "Touching the taskbar boundary leaves the bar clear");
 Expect(upperBar.CoverageFrom(upper, false, false) == TaskbarCoverage.Fullscreen
     && lowerBar.CoverageFrom(upper, false, false) == TaskbarCoverage.Clear,
     "Fullscreen is classified independently on each monitor");
-Expect(lowerBar.CoverageFrom(lower, true, false) == TaskbarCoverage.Fullscreen,
-    "A borderless maximized window that fills the actual display still counts as fullscreen");
+Expect(lowerBar.CoverageFrom(lower, true, true) == TaskbarCoverage.Fullscreen,
+    "A visible maximized window that fills the display still counts as fullscreen");
+Expect(upperBar.ReclaimTaskbarStrip(upperWorkArea) == upper,
+    "Reclaiming the taskbar's reserved space lets maximized windows reach the edge");
+var workWithSideAppbar = Rectangle.FromLTRB(75, upper.Top, upper.Right, upperBar.ShownBounds.Top);
+Expect(upperBar.ReclaimTaskbarStrip(workWithSideAppbar)
+    == Rectangle.FromLTRB(75, upper.Top, upper.Right, upper.Bottom),
+    "Reclaiming the taskbar strip preserves another appbar's reservation");
+var workWithTwoBottomReservations = Rectangle.FromLTRB(upper.Left, upper.Top, upper.Right, upperBar.ShownBounds.Top - 20);
+Expect(upperBar.ReclaimTaskbarStrip(workWithTwoBottomReservations) == workWithTwoBottomReservations,
+    "An ambiguous reservation at the same edge is left alone");
 
 var animation = new TaskbarRetraction();
 animation.SetVisible(false, 1000);
@@ -87,7 +96,7 @@ Expect(dwell.TryRequestReveal(2180) && !dwell.TryRequestReveal(3000),
 Expect(!dwell.IsReady(upperBar.Handle, 3010) && dwell.TryRequestReveal(3190),
     "A new taskbar gets its own reveal attempts");
 
-Console.WriteLine("30 taskbar geometry and animation checks passed.");
+Console.WriteLine("33 taskbar geometry and animation checks passed.");
 
 static void Expect(bool condition, string message)
 {

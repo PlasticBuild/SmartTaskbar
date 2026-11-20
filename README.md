@@ -13,7 +13,7 @@ SmartTaskbar  <img src="https://github.com/ChanpleCai/SmartTaskbar/blob/main/log
 
 ## Windows desktop preview
 
-**Intelligent auto-hide** keeps the taskbars visible on the desktop and animates the affected taskbar when a window overlaps it, is maximized on that display, or goes fullscreen. Move to the edge to reveal the taskbar temporarily. The Windows work area stays fixed so taskbar changes do not move the desktop layout. An ordinary maximized window still uses the reserved Windows work area. Fullscreen can use the entire display.
+**Intelligent auto-hide** keeps the taskbars visible on the desktop and animates the affected bar when a window overlaps it, is maximized on that display, or goes fullscreen. A visible maximized or fullscreen window keeps its bar hidden when you switch to the other display. Move to its edge to reveal it temporarily. Maximized windows can use the taskbar strip without moving the desktop icons. SmartTaskbar restores the normal Windows work area on exit or pause.
 
 **Always auto-hide** keeps the taskbars hidden until you pause the pointer near the edge. On stacked displays, pause just above the shared edge to reveal the upper taskbar. A quick crossing leaves SmartTaskbar's reveal inactive.
 
