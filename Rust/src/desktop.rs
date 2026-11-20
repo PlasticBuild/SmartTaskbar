@@ -15,13 +15,21 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Instant, SystemTime};
 use windows_sys::Win32::{
     Foundation::*,
-    System::Threading::*,
+    Storage::FileSystem::*,
+    System::{LibraryLoader::GetModuleHandleW, Threading::*},
     UI::{Accessibility::*, HiDpi::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
+
+pub use native::Monitor;
+
+pub fn monitor_choices() -> Vec<Monitor> {
+    let _dpi = DpiScope::enter();
+    native::monitors()
+}
 
 struct DpiScope(DPI_AWARENESS_CONTEXT);
 impl DpiScope {
@@ -113,6 +121,77 @@ pub fn request_stop() -> Result<(), String> {
 
 static DIRTY: AtomicBool = AtomicBool::new(false);
 static MEDIA_CHANGED: AtomicBool = AtomicBool::new(false);
+static TOPOLOGY_CHANGED: AtomicBool = AtomicBool::new(false);
+static SHELL_LAYOUT_CHANGED: AtomicBool = AtomicBool::new(false);
+static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static OBSERVER_THREAD: AtomicU32 = AtomicU32::new(0);
+const STYLE_CHANGED: u32 = WM_APP + 0x62;
+
+pub fn style_changed() {
+    let thread = OBSERVER_THREAD.load(Ordering::Relaxed);
+    if thread != 0 {
+        unsafe { PostThreadMessageW(thread, STYLE_CHANGED, 0, 0) };
+    }
+}
+
+unsafe extern "system" fn system_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let setting = if msg == WM_SETTINGCHANGE && lp != 0 {
+        // Compare only the names we handle. The broadcast text belongs to Windows.
+        ["ConvertibleSlateMode", "SystemDockMode", "TraySettings"]
+            .iter()
+            .any(|name| {
+                native::wide(name)
+                    .iter()
+                    .enumerate()
+                    .all(|(i, c)| unsafe { *(lp as *const u16).add(i) == *c })
+            })
+    } else {
+        false
+    };
+    if matches!(msg, WM_DISPLAYCHANGE | WM_DEVICECHANGE | WM_POWERBROADCAST)
+        || setting
+        || msg == TASKBAR_CREATED.load(Ordering::Relaxed) && msg != 0
+    {
+        TOPOLOGY_CHANGED.store(true, Ordering::Relaxed);
+        return 0;
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+
+fn notification_window() -> HWND {
+    unsafe {
+        let instance = GetModuleHandleW(null());
+        let class = native::wide("SmartTaskbar.Rust.Notifications");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(system_change),
+            hInstance: instance,
+            lpszClassName: class.as_ptr(),
+            ..Default::default()
+        };
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            return null_mut();
+        }
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(native::wide("TaskbarCreated").as_ptr()),
+            Ordering::Relaxed,
+        );
+        CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            class.as_ptr(),
+            null(),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            null_mut(),
+            null_mut(),
+            instance,
+            null(),
+        )
+    }
+}
 unsafe extern "system" fn change(
     _: HWINEVENTHOOK,
     event: u32,
@@ -135,10 +214,12 @@ unsafe extern "system" fn change(
 
 struct Notifications {
     stop: HANDLE,
+    config: HANDLE,
+    hwnd: HWND,
     hooks: Vec<HWINEVENTHOOK>,
 }
 impl Notifications {
-    fn create() -> Result<Self, String> {
+    fn create(path: &Path) -> Result<Self, String> {
         let stop = unsafe { CreateEventW(null(), 1, 0, native::wide(STOP_NAME).as_ptr()) };
         if stop.is_null() {
             return Err("Could not open the taskbar stop event.".into());
@@ -176,17 +257,53 @@ impl Notifications {
                 hooks.push(hook)
             }
         }
-        Ok(Self { stop, hooks })
+        use std::os::windows::ffi::OsStrExt;
+        let config = path.parent().map_or(INVALID_HANDLE_VALUE, |dir| {
+            let dir = dir.as_os_str().encode_wide().chain([0]).collect::<Vec<_>>();
+            unsafe {
+                FindFirstChangeNotificationW(
+                    dir.as_ptr(),
+                    0,
+                    FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                )
+            }
+        });
+        OBSERVER_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+        Ok(Self {
+            stop,
+            config,
+            hwnd: notification_window(),
+            hooks,
+        })
     }
-    fn wait(&self, ms: u32) -> Result<bool, String> {
+    fn wait(&mut self, ms: u32) -> Result<bool, String> {
+        let handles = [self.stop, self.config];
+        let count = if self.config == INVALID_HANDLE_VALUE {
+            1
+        } else {
+            2
+        };
         let result = unsafe {
-            MsgWaitForMultipleObjectsEx(1, &self.stop, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+            MsgWaitForMultipleObjectsEx(
+                count,
+                handles.as_ptr(),
+                ms,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
         };
         if result == WAIT_FAILED {
             return Err("Windows could not wait for taskbar input.".into());
         }
         if result == WAIT_OBJECT_0 {
             return Ok(false);
+        }
+        if count == 2 && result == WAIT_OBJECT_0 + 1 {
+            CONFIG_CHANGED.store(true, Ordering::Relaxed);
+            if unsafe { FindNextChangeNotification(self.config) } == 0 {
+                unsafe { FindCloseChangeNotification(self.config) };
+                self.config = INVALID_HANDLE_VALUE;
+            }
         }
         let mut msg = MSG::default();
         // Bound each batch so a noisy compositor cannot starve the next animation step.
@@ -202,6 +319,11 @@ impl Notifications {
                 MEDIA_CHANGED.store(true, Ordering::Relaxed);
                 continue;
             }
+            if msg.hwnd.is_null() && msg.message == STYLE_CHANGED {
+                // Give Explorer one layout pass before sampling the new outline.
+                SHELL_LAYOUT_CHANGED.store(true, Ordering::Relaxed);
+                continue;
+            }
             unsafe {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg)
@@ -212,10 +334,17 @@ impl Notifications {
 }
 impl Drop for Notifications {
     fn drop(&mut self) {
+        OBSERVER_THREAD.store(0, Ordering::Relaxed);
         for h in self.hooks.drain(..) {
             unsafe { UnhookWinEvent(h) };
         }
         unsafe {
+            if self.config != INVALID_HANDLE_VALUE {
+                FindCloseChangeNotification(self.config);
+            }
+            if !self.hwnd.is_null() {
+                DestroyWindow(self.hwnd);
+            }
             UnregisterHotKey(null_mut(), HOTKEY);
             CloseHandle(self.stop)
         };
@@ -421,6 +550,7 @@ impl Drop for Managed {
 struct Model {
     managed: HashMap<usize, Managed>,
     displays: Vec<Rect>,
+    monitors: Vec<Monitor>,
     scene: Scene,
     names: native::ProcessNames,
     shell: u32,
@@ -428,12 +558,18 @@ struct Model {
     media_reserve: media::Reserve,
     reserve_changed_at: u64,
     cursor: Option<policy::Point>,
+    pointer_idle_ms: Option<u32>,
+    native_touch: bool,
 }
 impl Model {
-    fn sync(&mut self, guard: &mut rescue::Monitor) -> Result<(), String> {
-        self.displays = native::displays();
+    fn sync(&mut self, guard: &mut rescue::Monitor, topology_changed: bool) -> Result<(), String> {
+        if topology_changed || self.monitors.is_empty() {
+            self.monitors = native::monitors();
+            self.displays = self.monitors.iter().map(|m| m.bounds).collect();
+        }
         self.shell = native::shell_pid();
-        let bars = if native::tablet() || native::explorer_auto_hide() {
+        self.native_touch = native::tablet();
+        let bars = if self.native_touch || native::explorer_auto_hide() {
             Vec::new()
         } else {
             native::bars()
@@ -466,12 +602,17 @@ impl Model {
         }
         Ok(())
     }
-    fn update(&mut self, settings: &Settings, now: u64) -> Result<u32, String> {
-        let cursor = native::cursor();
+    fn update(
+        &mut self,
+        settings: &Settings,
+        now: u64,
+        cursor: Option<policy::Point>,
+    ) -> Result<u32, String> {
         let pointer_moved = self.cursor != cursor;
         self.cursor = cursor;
         let mut thumbnail = None;
-        let mut delay = 1200;
+        let mut delay = 2400;
+        let mut stationary_can_wait = true;
         if settings.media_player && !self.managed.is_empty() {
             if self.media.is_none() {
                 self.media = Worker::start();
@@ -547,6 +688,12 @@ impl Model {
         }
         for m in self.managed.values_mut() {
             let bar = m.snap.bar.strip;
+            let reveal = settings.reveal(
+                self.monitors
+                    .iter()
+                    .find(|monitor| monitor.bounds == bar.display)
+                    .map(|monitor| monitor.id.as_str()),
+            );
             let face = if settings.island {
                 m.snap.compact
             } else {
@@ -612,7 +759,7 @@ impl Model {
             let visible = pointer.is_none_or(|p| {
                 m.hover.update(
                     surface,
-                    settings.zone,
+                    reveal,
                     &self.displays,
                     p,
                     covered,
@@ -686,23 +833,23 @@ impl Model {
                 false
             };
             if animating || bridge || media_frame || offset.is_some() {
-                delay = 16
+                delay = 16;
+                stationary_can_wait = false;
             } else if let Some(point) = cursor {
                 if covered {
                     // Read the cursor at animation cadence near the edge. Most of
                     // a maximized session spends its time well away from the bar.
-                    delay = delay.min(pointer_interval(
-                        bar,
-                        point,
-                        surface.dpi,
-                        pointer_moved,
-                        visible,
-                    ));
+                    let interval =
+                        pointer_interval(bar, point, surface.dpi, pointer_moved, visible);
+                    delay = delay.min(interval);
+                    stationary_can_wait &= interval != 32;
                 } else if m.media.is_visible() || !self.scene.context_menus.is_empty() {
                     delay = delay.min(85);
                 }
             }
+            stationary_can_wait &= !menu && !m.media.is_visible() && m.reflow.is_none();
         }
+        self.pointer_idle_ms = stationary_can_wait.then_some(if delay == 60 { 140 } else { delay });
         Ok(delay)
     }
     fn publish(&self, settings: &Settings) {
@@ -715,13 +862,14 @@ impl Model {
         } else {
             None
         };
-        crate::integrations::layout_changed(
+        crate::integrations::layout_changed(crate::integrations::Layout {
             geometry,
-            !self.scene.menus.is_empty()
+            flyout_open: !self.scene.menus.is_empty()
                 || !self.scene.panels.is_empty()
                 || self.managed.values().any(|m| m.context.is_some()),
-            self.media_reserve,
-        );
+            reserve: self.media_reserve,
+            native_touch: self.native_touch,
+        });
     }
 }
 
@@ -797,7 +945,7 @@ fn modified(path: &Path) -> Option<SystemTime> {
 
 pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
     let _dpi = DpiScope::enter();
-    let events = Notifications::create()?;
+    let mut events = Notifications::create(settings_path)?;
     let mut guard = rescue::Monitor::start()?;
     // Drop order matters: Managed objects return the shell to its original state before the
     // recovery pipe closes. The child also handles abrupt termination or a process crash.
@@ -805,16 +953,18 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
     let start = Instant::now();
     let mut settings = initial.clone();
     let mut stamp = modified(settings_path);
-    const SCENE_FALLBACK: u64 = 1800;
+    let scene_fallback = if events.hooks.len() == 3 { 3200 } else { 1800 };
     const SCENE_DEBOUNCE: u64 = 40;
     let mut next_sync = 0;
+    let mut next_topology = 0;
     let mut next_scene = 0u64;
     let mut next_config = 0;
+    let mut next_health = 0;
     let mut next_update = 0;
     loop {
         let now = start.elapsed().as_millis() as u64;
         let mut publish = false;
-        if now >= next_config {
+        if now >= next_health {
             if crate::csharp_running() {
                 return Err(
                     "The C# taskbar engine started. The Rust engine has released the desktop."
@@ -822,6 +972,13 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
                 );
             }
             guard.check()?;
+            next_health = now + 4500;
+        }
+        let config_changed = CONFIG_CHANGED.swap(false, Ordering::Relaxed);
+        if config_changed || now >= next_config {
+            if crate::is_paused(settings_path) {
+                break;
+            }
             let current = modified(settings_path);
             if current != stamp
                 && let Ok(new) = Settings::load(settings_path)
@@ -832,19 +989,36 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
                 publish = true;
                 next_sync = now;
             }
-            next_config = now + 1500;
+            next_config = now
+                + if events.config == INVALID_HANDLE_VALUE {
+                    1500
+                } else {
+                    8000
+                };
+        }
+        let topology_event = TOPOLOGY_CHANGED.swap(false, Ordering::Relaxed);
+        let topology_changed = topology_event || now >= next_topology;
+        if topology_changed {
+            next_topology = now + if events.hwnd.is_null() { 1250 } else { 9500 };
+            next_sync = now;
+            next_scene = now;
+        }
+        if SHELL_LAYOUT_CHANGED.swap(false, Ordering::Relaxed) {
+            next_sync = next_sync.min(now + 27);
         }
         if now >= next_sync {
-            model.sync(&mut guard)?;
+            model.sync(&mut guard, topology_changed)?;
             next_sync = now
                 + if model.managed.values().any(|m| m.reflow.is_some()) {
                     27
+                } else if model.managed.is_empty() {
+                    900
                 } else {
-                    1250
+                    4200
                 };
             publish = true;
         }
-        let dirty_due = next_scene.saturating_sub(SCENE_FALLBACK - SCENE_DEBOUNCE);
+        let dirty_due = next_scene.saturating_sub(scene_fallback - SCENE_DEBOUNCE);
         if now >= next_scene || (DIRTY.load(Ordering::Relaxed) && now >= dirty_due) {
             DIRTY.store(false, Ordering::Relaxed);
             model.scene = if model.managed.is_empty() {
@@ -853,13 +1027,23 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
             } else {
                 native::scene(&mut model.names)
             };
-            next_scene = now + SCENE_FALLBACK;
+            next_scene = now + scene_fallback;
             publish = true;
         }
         let before = model.media_reserve;
         let media_changed = MEDIA_CHANGED.swap(false, Ordering::Relaxed);
         if publish || now >= next_update || media_changed {
-            next_update = now + u64::from(model.update(&settings, now)?);
+            let cursor = native::cursor();
+            let delay = if !publish
+                && !media_changed
+                && cursor == model.cursor
+                && let Some(idle_ms) = model.pointer_idle_ms
+            {
+                idle_ms
+            } else {
+                model.update(&settings, now, cursor)?
+            };
+            next_update = now + u64::from(delay);
         }
         if before != model.media_reserve && settings.animate {
             next_sync = now;
@@ -867,9 +1051,14 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
         if publish || before != model.media_reserve {
             model.publish(&settings)
         }
-        let mut due = next_sync.min(next_scene).min(next_config).min(next_update);
+        let mut due = next_sync
+            .min(next_topology)
+            .min(next_scene)
+            .min(next_config)
+            .min(next_health)
+            .min(next_update);
         if DIRTY.load(Ordering::Relaxed) {
-            due = due.min(next_scene.saturating_sub(SCENE_FALLBACK - SCENE_DEBOUNCE));
+            due = due.min(next_scene.saturating_sub(scene_fallback - SCENE_DEBOUNCE));
         }
         let elapsed = start.elapsed().as_millis() as u64;
         if !events.wait(due.saturating_sub(elapsed) as u32)? {
@@ -882,6 +1071,20 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hidden_listener_accepts_shell_and_posture_notifications() {
+        let hwnd = notification_window();
+        assert!(!hwnd.is_null());
+        let taskbar_created = TASKBAR_CREATED.load(Ordering::Relaxed);
+        assert_ne!(taskbar_created, 0);
+        unsafe { SendMessageW(hwnd, taskbar_created, 0, 0) };
+        assert!(TOPOLOGY_CHANGED.swap(false, Ordering::Relaxed));
+        let slate = native::wide("ConvertibleSlateMode");
+        unsafe { SendMessageW(hwnd, WM_SETTINGCHANGE, 0, slate.as_ptr() as isize) };
+        assert!(TOPOLOGY_CHANGED.swap(false, Ordering::Relaxed));
+        unsafe { DestroyWindow(hwnd) };
+    }
+
     #[test]
     fn pointer_sampling_slows_only_away_from_a_covered_bar() {
         let display = Rect::new(0, -900, 1600, 0);

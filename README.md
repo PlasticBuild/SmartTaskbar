@@ -2,6 +2,11 @@
 
 SmartTaskbar  <img src="https://github.com/ChanpleCai/SmartTaskbar/blob/main/logo/logo.png" width="24">
 =====
+
+**Windows 11 Rust build** · [Setup and feature documentation](Rust/README.md) · [GitHub releases](https://github.com/PlasticBuild/SmartTaskbar/releases)
+
+The Rust build offers intelligent auto-hide, configurable reveal on each display, and a native full-width or floating taskbar. The original SmartTaskbar documentation is below.
+
 [![Version](https://badge.fury.io/gh/ChanpleCai%2FSmartTaskbar.svg)](https://github.com/ChanpleCai/SmartTaskbar/releases/download/v1.4.5/SmartTaskbar_Setup.exe)
 [![Latest Release](https://img.shields.io/github/downloads/ChanpleCai/SmartTaskbar/latest/total.svg)](https://github.com/ChanpleCai/SmartTaskbar/releases/download/v1.4.5/SmartTaskbar_Setup.exe)
 [![All Releases](https://img.shields.io/github/downloads/ChanpleCai/SmartTaskbar/total.svg)](https://github.com/ChanpleCai/SmartTaskbar/releases)

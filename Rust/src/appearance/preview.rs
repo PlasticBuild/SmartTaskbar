@@ -316,13 +316,21 @@ pub(super) fn geometry(s: &State) -> Geometry {
     arrange(
         s.page.scene(),
         &s.draft,
+        s.draft.reveal(s.monitor.as_deref()).zone,
         s.paint.icons.len(),
         s.demo.shown,
         s.demo.open,
     )
 }
 
-fn arrange(scene: Box2, draft: &Settings, pins: usize, shown: f32, opened: f32) -> Geometry {
+fn arrange(
+    scene: Box2,
+    draft: &Settings,
+    zone: crate::settings::Zone,
+    pins: usize,
+    shown: f32,
+    opened: f32,
+) -> Geometry {
     use crate::policy::{
         Edge, NativeBar, Rect, activation_band, anchored_start, island_rect, joined_start_face,
         slide_offset,
@@ -377,7 +385,7 @@ fn arrange(scene: Box2, draft: &Settings, pins: usize, shown: f32, opened: f32) 
             )
         })
         .collect();
-    let band = activation_band(native, Some(resting), draft.zone, dpi);
+    let band = activation_band(native, Some(resting), zone, dpi);
     let to_box = |r: Rect| Box2::at(r.left, r.top, r.width(), r.height());
     let media = if draft.media_player && shown >= 0.99 && opened == 0.0 {
         crate::media::placement(
@@ -502,53 +510,86 @@ pub(super) unsafe fn paint(hwnd: HWND, s: &State) {
         SetDCBrushColor(dc, palette.page);
         FillRect(dc, &bounds, GetStockObject(DC_BRUSH) as HBRUSH);
         let p = s.page;
-        c.text(
-            Box2::at(p.preview.x, 12, p.width - 35, 38),
-            "Taskbar appearance",
-            s.paint.title,
-            palette.text,
-        );
-        for (card, caption) in [
-            (p.preview, "Live preview"),
-            (p.settings, "Appearance & behavior"),
-        ] {
+        if s.updates_tab {
+            let card = Box2::at(p.preview.x, 102, p.width - 2 * p.preview.x, 228);
             c.round(card, 9, palette.card, palette.line);
             c.text(
-                Box2::at(card.x + 14, card.y + 6, card.w - 28, 32),
-                caption,
+                Box2::at(card.x + 14, 112, card.w - 28, 30),
+                "Updates",
                 s.paint.heading,
                 palette.text,
             );
-        }
-        for (id, value) in [
-            (RADIUS, format!("{} px", s.draft.radius)),
-            (TRANSPARENCY, format!("{}%", s.draft.transparency)),
-            (ICON_SIZE, format!("{}%", s.draft.icon_size)),
-            (HOVER, format!("{} px", s.draft.hover_lift)),
-            (PRESS, format!("{} px", s.draft.click_depth)),
-        ] {
-            let control = p.control(id);
             c.text(
-                Box2::at(control.x + control.w - 48, control.y - 19, 48, 18),
-                &value,
+                Box2::at(card.x + 14, 150, card.w - 28, 25),
+                &format!("Installed version {}", crate::updates::CURRENT),
+                s.paint.normal,
+                palette.muted,
+            );
+            c.text(
+                Box2::at(card.x + 14, 184, card.w - 28, 30),
+                &s.update_status,
+                s.paint.normal,
+                if s.update_available {
+                    palette.accent
+                } else {
+                    palette.text
+                },
+            );
+        } else {
+            for (card, caption) in [
+                (p.preview, "Live preview"),
+                (p.settings, "Appearance & behavior"),
+            ] {
+                c.round(card, 9, palette.card, palette.line);
+                c.text(
+                    Box2::at(card.x + 14, card.y + 6, card.w - 28, 32),
+                    caption,
+                    s.paint.heading,
+                    palette.text,
+                );
+            }
+            for (id, value) in [
+                (RADIUS, format!("{} px", s.draft.radius)),
+                (TRANSPARENCY, format!("{}%", s.draft.transparency)),
+                (ICON_SIZE, format!("{}%", s.draft.icon_size)),
+                (HOVER, format!("{} px", s.draft.hover_lift)),
+                (PRESS, format!("{} px", s.draft.click_depth)),
+            ] {
+                let control = p.control(id);
+                c.text(
+                    Box2::at(control.x + control.w - 48, control.y - 19, 48, 18),
+                    &value,
+                    s.paint.normal,
+                    palette.muted,
+                );
+            }
+            let notice = if !s.status.is_empty() {
+                s.status.as_str()
+            } else if s.old != s.draft {
+                "Unapplied changes"
+            } else {
+                ""
+            };
+            draw_scene(&c, s);
+            c.text(
+                Box2::at(p.preview.x, p.footer, (p.width - 40).max(20), 32),
+                notice,
                 s.paint.normal,
                 palette.muted,
             );
         }
-        let notice = if !s.status.is_empty() {
-            s.status.as_str()
-        } else if s.old != s.draft {
-            "Unapplied changes"
-        } else {
-            ""
+        let header = Canvas {
+            dc,
+            dpi: s.dpi,
+            scroll: 0,
         };
-        c.text(
-            Box2::at(p.preview.x + 120, p.footer, (p.width - 290).max(20), 32),
-            notice,
-            s.paint.normal,
-            palette.muted,
+        header.fill(Box2::at(0, 0, p.width, 100), palette.page);
+        header.text(
+            Box2::at(p.preview.x, 12, (p.width - 195).max(160), 38),
+            "SmartTaskbar",
+            s.paint.title,
+            palette.text,
         );
-        draw_scene(&c, s);
         BitBlt(screen, 0, 0, bounds.right, bounds.bottom, dc, 0, 0, SRCCOPY);
         SelectObject(dc, previous);
         DeleteObject(bmp);
@@ -745,8 +786,8 @@ mod tests {
                 alignment,
                 ..Settings::default()
             };
-            let first = arrange(scene, &settings, 1, 1.0, 0.01);
-            let last = arrange(scene, &settings, 1, 1.0, 1.0);
+            let first = arrange(scene, &settings, settings.zone, 1, 1.0, 0.01);
+            let last = arrange(scene, &settings, settings.zone, 1, 1.0, 1.0);
             assert_eq!(
                 (first.menu_box.x, first.menu_box.y, first.menu_box.w),
                 (last.menu_box.x, last.menu_box.y, last.menu_box.w)
@@ -768,7 +809,7 @@ mod tests {
             zone: Zone::Center,
             ..Settings::default()
         };
-        let g = arrange(scene, &settings, 12, 0.0, 0.0);
+        let g = arrange(scene, &settings, settings.zone, 12, 0.0, 0.0);
         assert_eq!(g.bar.w, scene.w);
         assert_eq!(g.bar.y, scene.y + scene.h);
         assert_eq!(g.activation.x, scene.x + scene.w / 4);

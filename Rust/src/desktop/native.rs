@@ -164,6 +164,80 @@ pub(super) fn displays() -> Vec<Rect> {
     out
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct Monitor {
+    pub bounds: Rect,
+    pub id: String,
+    pub label: String,
+}
+
+pub(super) fn monitors() -> Vec<Monitor> {
+    unsafe extern "system" fn each(h: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> i32 {
+        unsafe {
+            let mut info = MONITORINFOEXW::default();
+            info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+            if GetMonitorInfoW(h, &mut info.monitorInfo) != 0 {
+                let name = from_wide(&info.szDevice);
+                let mut device = DISPLAY_DEVICEW {
+                    cb: size_of::<DISPLAY_DEVICEW>() as u32,
+                    ..Default::default()
+                };
+                let mut model = String::new();
+                let mut id = String::new();
+                for index in 0..16 {
+                    if EnumDisplayDevicesW(
+                        info.szDevice.as_ptr(),
+                        index,
+                        &mut device,
+                        EDD_GET_DEVICE_INTERFACE_NAME,
+                    ) == 0
+                    {
+                        break;
+                    }
+                    if device.StateFlags & DISPLAY_DEVICE_ACTIVE != 0 {
+                        model = from_wide(&device.DeviceString);
+                        id = from_wide(&device.DeviceID);
+                        break;
+                    }
+                }
+                let number = name.rsplit("DISPLAY").next().unwrap_or(&name);
+                let primary = if info.monitorInfo.dwFlags & 1 != 0 {
+                    " (primary)"
+                } else {
+                    ""
+                };
+                let mut label = format!("Display {number}{primary}");
+                if !model.is_empty() && !model.to_ascii_lowercase().starts_with("generic") {
+                    label.push_str(" · ");
+                    label.push_str(&model);
+                }
+                (&mut *(data as *mut Vec<Monitor>)).push(Monitor {
+                    bounds: rect(info.monitorInfo.rcMonitor),
+                    id: if id.is_empty() { name } else { id }.to_ascii_lowercase(),
+                    label,
+                });
+            }
+        }
+        1
+    }
+    let mut monitors = Vec::new();
+    unsafe {
+        EnumDisplayMonitors(
+            null_mut(),
+            null(),
+            Some(each),
+            (&mut monitors as *mut Vec<Monitor>) as LPARAM,
+        )
+    };
+    monitors.sort_by_key(|display: &Monitor| (display.bounds.top, display.bounds.left));
+    monitors
+}
+
+fn from_wide(buffer: &[u16]) -> String {
+    let len = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..len])
+}
+
 pub(super) fn shell_pid() -> u32 {
     window_pid(unsafe { GetShellWindow() })
 }

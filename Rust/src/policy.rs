@@ -1,5 +1,5 @@
 //! Desktop-independent taskbar policy. Rectangles are half-open, in physical virtual-screen pixels.
-use crate::settings::{Alignment, Zone};
+use crate::settings::{Alignment, Reveal, Zone};
 
 pub const START_MIN_DIP: i32 = 420;
 pub const START_MAX_DIP: i32 = 760;
@@ -205,6 +205,7 @@ pub struct HoverState {
     entered_at: Option<u64>,
     peek_until: Option<u64>,
     display_edge: Option<(Rect, Edge)>,
+    reveal: Option<Reveal>,
 }
 
 #[derive(Clone, Copy)]
@@ -225,7 +226,7 @@ impl HoverState {
     pub fn update(
         &mut self,
         surface: BarInput,
-        zone: Zone,
+        reveal: Reveal,
         displays: &[Rect],
         frame: PointerFrame,
         covered: bool,
@@ -233,9 +234,10 @@ impl HoverState {
     ) -> bool {
         let BarInput { bar, island, dpi } = surface;
         let PointerFrame { cursor, now_ms } = frame;
-        if self.display_edge != Some((bar.display, bar.edge)) {
+        if self.display_edge != Some((bar.display, bar.edge)) || self.reveal != Some(reveal) {
             *self = Self {
                 display_edge: Some((bar.display, bar.edge)),
+                reveal: Some(reveal),
                 ..Self::default()
             };
         }
@@ -252,7 +254,7 @@ impl HoverState {
             return true;
         }
 
-        let in_band = activation_band(bar, island, zone, dpi).contains(cursor);
+        let in_band = activation_band(bar, island, reveal.zone, dpi).contains(cursor);
         let face = island
             .and_then(|rect| rect.intersection(bar.bounds))
             .unwrap_or(bar.bounds);
@@ -289,7 +291,11 @@ impl HoverState {
         {
             self.entered_at = Some(now_ms);
         }
-        let dwell = if shared { 220 } else { 120 };
+        let dwell = u64::from(if shared {
+            reveal.shared_ms
+        } else {
+            reveal.outside_ms
+        });
         if self
             .entered_at
             .is_some_and(|entered| now_ms.saturating_sub(entered) >= dwell)
@@ -599,7 +605,7 @@ mod tests {
         let mut visible = |y, now_ms| {
             hover.update(
                 input,
-                Zone::Entire,
+                Reveal::default(),
                 &[UPPER, LOWER],
                 PointerFrame {
                     cursor: Point { x: 12, y },
@@ -633,7 +639,7 @@ mod tests {
         let mut visible = |x, y, now_ms| {
             hover.update(
                 input,
-                Zone::Entire,
+                Reveal::default(),
                 &[UPPER, LOWER],
                 PointerFrame {
                     cursor: Point { x, y },
@@ -653,6 +659,39 @@ mod tests {
     }
 
     #[test]
+    fn expose_only_after_the_selected_delay_for_that_part_of_the_edge() {
+        let input = BarInput {
+            bar: dock(UPPER, Edge::Bottom),
+            island: None,
+            dpi: 96,
+        };
+        let reveal = Reveal {
+            outside_ms: 0,
+            shared_ms: 400,
+            ..Reveal::default()
+        };
+        let check = |state: &mut HoverState, x, y, now_ms| {
+            state.update(
+                input,
+                reveal,
+                &[UPPER, LOWER],
+                PointerFrame {
+                    cursor: Point { x, y },
+                    now_ms,
+                },
+                true,
+                false,
+            )
+        };
+        let mut shared = HoverState::default();
+        assert!(!check(&mut shared, 12, -40, 0));
+        assert!(!check(&mut shared, 12, -2, 20));
+        assert!(!check(&mut shared, 12, -2, 419));
+        assert!(check(&mut shared, 12, -2, 420));
+        assert!(check(&mut HoverState::default(), -400, -2, 0));
+    }
+
+    #[test]
     fn menu_pins_its_display_and_desktop_returns_to_rest_without_dwell() {
         let bar = dock(LOWER, Edge::Right);
         let p = Point { x: 100, y: 100 };
@@ -665,7 +704,10 @@ mod tests {
         let mut visible = |now_ms, covered, menu| {
             hover.update(
                 input,
-                Zone::Island,
+                Reveal {
+                    zone: Zone::Island,
+                    ..Reveal::default()
+                },
                 &[LOWER],
                 PointerFrame { cursor: p, now_ms },
                 covered,

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,24 @@ pub enum Zone {
     Island,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reveal {
+    pub zone: Zone,
+    pub outside_ms: u16,
+    pub shared_ms: u16,
+}
+
+impl Default for Reveal {
+    fn default() -> Self {
+        Self {
+            zone: Zone::Entire,
+            outside_ms: 120,
+            shared_ms: 220,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MediaSide {
     Left,
@@ -39,6 +58,9 @@ pub struct Settings {
     pub animate: bool,
     pub alignment: Alignment,
     pub zone: Zone,
+    pub outside_dwell_ms: u16,
+    pub shared_dwell_ms: u16,
+    pub monitor_reveal: BTreeMap<String, Reveal>,
     pub start_at_sign_in: bool,
     pub search_redirect: bool,
     pub web_engine: String,
@@ -58,6 +80,9 @@ impl Default for Settings {
             animate: true,
             alignment: Alignment::Center,
             zone: Zone::Entire,
+            outside_dwell_ms: Reveal::default().outside_ms,
+            shared_dwell_ms: Reveal::default().shared_ms,
+            monitor_reveal: BTreeMap::new(),
             start_at_sign_in: false,
             search_redirect: false,
             web_engine: "Google".into(),
@@ -81,6 +106,27 @@ impl Settings {
     pub const MIN_ICON_SIZE: u8 = 70;
     pub const MAX_ICON_SIZE: u8 = 125;
 
+    pub fn same_shell_style(&self, other: &Self) -> bool {
+        self.island == other.island
+            && self.radius == other.radius
+            && self.transparency == other.transparency
+            && self.icon_size == other.icon_size
+            && self.hover_lift == other.hover_lift
+            && self.click_depth == other.click_depth
+            && self.animate == other.animate
+            && self.alignment == other.alignment
+    }
+
+    pub fn reveal(&self, monitor: Option<&str>) -> Reveal {
+        monitor
+            .and_then(|key| self.monitor_reveal.get(key).copied())
+            .unwrap_or(Reveal {
+                zone: self.zone,
+                outside_ms: self.outside_dwell_ms,
+                shared_ms: self.shared_dwell_ms,
+            })
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.radius > 24
             || self.transparency > 85
@@ -92,6 +138,15 @@ impl Settings {
         }
         if !PROVIDERS.contains(&self.web_engine.as_str()) {
             return Err(format!("Unknown search provider: {}", self.web_engine));
+        }
+        let valid = |r: Reveal| r.outside_ms <= 1000 && (150..=1000).contains(&r.shared_ms);
+        if !valid(self.reveal(None))
+            || self
+                .monitor_reveal
+                .iter()
+                .any(|(id, r)| id.is_empty() || !valid(*r))
+        {
+            return Err("Taskbar reveal delays are outside the supported range.".into());
         }
         Ok(())
     }
@@ -195,6 +250,27 @@ mod tests {
         assert_eq!(s.media_side, MediaSide::Right);
         assert_eq!(s.icon_size, 100);
         assert_eq!(s.radius, 8);
+        assert_eq!(s.reveal(Some("previously disconnected")), Reveal::default());
+    }
+
+    #[test]
+    fn display_overrides_follow_identity_and_older_prefs_supply_defaults() {
+        let mut settings: Settings = serde_json::from_str(r#"{"zone":"Island"}"#).unwrap();
+        let custom = Reveal {
+            zone: Zone::Center,
+            outside_ms: 80,
+            shared_ms: 400,
+        };
+        settings.monitor_reveal.insert("display-b".into(), custom);
+        assert_eq!(settings.reveal(Some("display-b")), custom);
+        assert_eq!(settings.reveal(Some("display-a")).zone, Zone::Island);
+        assert_eq!(settings.reveal(None).shared_ms, 220);
+        settings
+            .monitor_reveal
+            .get_mut("display-b")
+            .unwrap()
+            .shared_ms = 0;
+        assert!(settings.validate().is_err());
     }
     #[test]
     fn invalid_values_are_rejected_before_writing() {

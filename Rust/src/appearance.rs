@@ -1,8 +1,13 @@
-use crate::settings::{Alignment, MediaSide, PROVIDERS, Settings, Zone};
+use crate::{
+    desktop::Monitor,
+    settings::{Alignment, MediaSide, PROVIDERS, Settings, Zone},
+    updates,
+};
 use std::{
     mem,
     path::{Path, PathBuf},
     ptr::{null, null_mut},
+    sync::mpsc,
     time::Instant,
 };
 use windows_sys::Win32::{
@@ -16,6 +21,7 @@ use windows_sys::Win32::{
             SetThreadDpiAwarenessContext,
         },
         Input::KeyboardAndMouse::*,
+        Shell::ShellExecuteW,
         WindowsAndMessaging::*,
     },
 };
@@ -42,8 +48,18 @@ const ENGINE: u16 = 115;
 const MEDIA: u16 = 116;
 const MEDIA_SIDE: u16 = 117;
 const ICON_SIZE: u16 = 118;
+const MONITOR: u16 = 119;
+const OVERRIDE: u16 = 120;
+const OUTSIDE: u16 = 121;
+const SHARED: u16 = 122;
+const TABS: u16 = 123;
+const CHECK_UPDATES: u16 = 124;
+const RELEASES: u16 = 125;
+const REPOSITORY: u16 = 126;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
+const UPDATE_TIMER: usize = 3;
+const ENGINE_TIMER: usize = 4;
 const LABEL: u16 = 1000;
 const LABELS: &[(u16, &str)] = &[
     (LAYOUT, "&Layout"),
@@ -53,7 +69,10 @@ const LABELS: &[(u16, &str)] = &[
     (ICON_SIZE, "App icon si&ze"),
     (HOVER, "&Hover lift"),
     (PRESS, "Click &depth"),
+    (MONITOR, "Reveal settings for &display"),
     (ZONE, "Activation &zone"),
+    (OUTSIDE, "Outside edge &delay"),
+    (SHARED, "Shared edge de&lay"),
     (PROVIDER, "Search pro&vider"),
     (MEDIA_SIDE, "Media player &side"),
 ];
@@ -94,14 +113,14 @@ impl Page {
             let right = (usable * 39 / 100).clamp(330, 445);
             let left = usable - right - 20;
             (
-                Box2::at(inset, 65, left, (height - 145).clamp(360, 610)),
-                Box2::at(inset + left + 20, 65, right, 632),
+                Box2::at(inset, 102, left, (height - 175).clamp(360, 610)),
+                Box2::at(inset + left + 20, 102, right, 820),
             )
         } else {
             let h = (usable * 53 / 100).clamp(215, 340);
             (
-                Box2::at(inset, 65, usable, h),
-                Box2::at(inset, 65 + h + 14, usable, 632),
+                Box2::at(inset, 102, usable, h),
+                Box2::at(inset, 102 + h + 14, usable, 820),
             )
         };
         Self {
@@ -124,13 +143,17 @@ impl Page {
             ICON_SIZE => (238, 25),
             HOVER => (284, 25),
             PRESS => (330, 25),
-            ZONE => (380, 25),
-            MOTION => (413, 23),
-            SIGN_IN => (439, 23),
-            SEARCH => (465, 23),
-            PROVIDER => (512, 25),
-            MEDIA => (548, 23),
-            MEDIA_SIDE => (594, 25),
+            MONITOR => (380, 25),
+            OVERRIDE => (411, 23),
+            ZONE => (459, 25),
+            OUTSIDE => (507, 25),
+            SHARED => (555, 25),
+            MOTION => (587, 23),
+            SIGN_IN => (613, 23),
+            SEARCH => (639, 23),
+            PROVIDER => (686, 25),
+            MEDIA => (722, 23),
+            MEDIA_SIDE => (768, 25),
             FULLSCREEN => {
                 return Box2::at(
                     self.preview.x + 13,
@@ -148,14 +171,20 @@ impl Page {
                 );
             }
             APPLY => {
+                return Box2::at(self.width - self.preview.x - 112, 63, 112, 32);
+            }
+            ENGINE => return Box2::at(self.width - self.preview.x - 142, 17, 142, 30),
+            TABS => {
                 return Box2::at(
-                    self.width - if self.width < 600 { 16 } else { 24 } - 112,
-                    self.footer,
-                    112,
+                    self.preview.x,
+                    63,
+                    self.width - 2 * self.preview.x - 122,
                     32,
                 );
             }
-            ENGINE => return Box2::at(self.preview.x, self.footer, 112, 32),
+            CHECK_UPDATES => return Box2::at(self.preview.x + 14, 235, 118, 32),
+            RELEASES => return Box2::at(self.preview.x + 140, 235, 116, 32),
+            REPOSITORY => return Box2::at(self.preview.x + 14, 277, 148, 32),
             _ => return Box2::default(),
         };
         Box2::at(x, r.y + row + 10, w, height)
@@ -209,6 +238,15 @@ struct State {
     status: String,
     ready: bool,
     engine: bool,
+    paused: bool,
+    transition_until: Option<Instant>,
+    monitors: Vec<Monitor>,
+    monitor: Option<String>,
+    updates_tab: bool,
+    settings_scroll: i32,
+    update_job: Option<mpsc::Receiver<Result<updates::Status, String>>>,
+    update_status: String,
+    update_available: bool,
 }
 
 struct DpiContext(DPI_AWARENESS_CONTEXT);
@@ -268,7 +306,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
         }
         let controls = INITCOMMONCONTROLSEX {
             dwSize: mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_BAR_CLASSES,
+            dwICC: ICC_BAR_CLASSES | ICC_TAB_CLASSES,
         };
         if InitCommonControlsEx(&controls) == 0 {
             return Err("Windows could not initialize the settings controls.".into());
@@ -290,6 +328,15 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             status: String::new(),
             ready: false,
             engine: crate::engine_running(),
+            paused: crate::is_paused(settings_path),
+            transition_until: None,
+            monitors: crate::desktop::monitor_choices(),
+            monitor: None,
+            updates_tab: false,
+            settings_scroll: 0,
+            update_job: None,
+            update_status: String::new(),
+            update_available: false,
         });
         let mut area: RECT = mem::zeroed();
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut area as *mut _ as _, 0);
@@ -312,6 +359,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             return Err(std::io::Error::last_os_error().to_string());
         }
         ShowWindow(hwnd, SW_SHOWNORMAL);
+        check_updates(hwnd, &mut *state);
         let mut msg: MSG = mem::zeroed();
         loop {
             let r = GetMessageW(&mut msg, null_mut(), 0, 0);
@@ -329,7 +377,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             let current = GetFocus();
             if msg.message == WM_KEYDOWN && current != prior && IsChild(hwnd, current) != 0 {
                 let id = GetDlgCtrlID(current) as u16;
-                if (LAYOUT..=ICON_SIZE).contains(&id) {
+                if (LAYOUT..=SHARED).contains(&id) && id != ENGINE && !state.updates_tab {
                     let b = state.page.control(id);
                     let mut visible = RECT::default();
                     GetClientRect(hwnd, &mut visible);
@@ -391,19 +439,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 0
             }
             WM_ACTIVATE if (*ptr).ready && (wp & 0xffff) != WA_INACTIVE as usize => {
-                if (*ptr).paint.refresh_icons() {
+                if !(*ptr).updates_tab && (*ptr).paint.refresh_icons() {
                     SetTimer(hwnd, ICON_TIMER, 90, None);
                 }
-                (*ptr).engine = crate::engine_running();
-                SetWindowTextW(
-                    GetDlgItem(hwnd, ENGINE as i32),
-                    wide(if (*ptr).engine {
-                        "Stop engine"
-                    } else {
-                        "Start engine"
-                    })
-                    .as_ptr(),
-                );
+                sync_engine(hwnd, ptr);
                 redraw(hwnd);
                 0
             }
@@ -416,6 +455,18 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     (*ptr).paint.theme(hwnd);
                     style_controls(hwnd, ptr);
                     redraw(hwnd);
+                }
+                0
+            }
+            WM_DISPLAYCHANGE if (*ptr).ready => {
+                (*ptr).monitors = crate::desktop::monitor_choices();
+                monitor_controls(hwnd, ptr);
+                0
+            }
+            WM_NOTIFY if (*ptr).ready && lp != 0 => {
+                let note = &*(lp as *const NMHDR);
+                if note.idFrom == TABS as usize && note.code == TCN_SELCHANGE {
+                    switch_tab(hwnd, ptr);
                 }
                 0
             }
@@ -444,16 +495,24 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_COMMAND if (*ptr).ready => {
                 let id = (wp & 0xffff) as u16;
                 let note = ((wp >> 16) & 0xffff) as u32;
-                if matches!(id, LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE)
-                    && note == CBN_SELCHANGE
-                {
-                    read_controls(hwnd, ptr);
+                if note == CBN_SELCHANGE {
+                    if id == MONITOR {
+                        select_monitor(hwnd, ptr);
+                    } else if matches!(
+                        id,
+                        LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE | OUTSIDE | SHARED
+                    ) {
+                        read_controls(hwnd, ptr);
+                    }
                 } else if note == BN_CLICKED {
                     match id {
                         MOTION | SIGN_IN | SEARCH | MEDIA => read_controls(hwnd, ptr),
                         MENU | FULLSCREEN => toggle_preview(hwnd, ptr, id),
                         APPLY => save(hwnd, ptr),
                         ENGINE => engine(hwnd, ptr),
+                        OVERRIDE => change_override(hwnd, ptr),
+                        CHECK_UPDATES => check_updates(hwnd, ptr),
+                        RELEASES | REPOSITORY => open_github(hwnd, ptr, id),
                         _ => {}
                     }
                 }
@@ -482,7 +541,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 scroll(hwnd, ptr, -(((wp >> 16) as i16) as i32) * 48 / 120);
                 0
             }
-            WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP => {
+            WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP if !(*ptr).updates_tab => {
                 if (*ptr).ready {
                     pointer(
                         hwnd,
@@ -494,7 +553,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 }
                 0
             }
-            WM_MOUSELEAVE | WM_CAPTURECHANGED => {
+            WM_MOUSELEAVE | WM_CAPTURECHANGED if !(*ptr).updates_tab => {
                 (*ptr).demo.hot = None;
                 (*ptr).demo.over_edge = false;
                 (*ptr).demo.down = false;
@@ -510,6 +569,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_TIMER if wp == TIMER => {
                 update_animation(hwnd, ptr);
+                0
+            }
+            WM_TIMER if wp == UPDATE_TIMER => {
+                receive_updates(hwnd, ptr);
+                0
+            }
+            WM_TIMER if wp == ENGINE_TIMER => {
+                sync_engine(hwnd, ptr);
                 0
             }
             WM_CLOSE => {
@@ -536,6 +603,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         for id in (LAYOUT..=TRANSPARENCY)
             .chain([ICON_SIZE])
             .chain(HOVER..=MEDIA_SIDE)
+            .chain(MONITOR..=REPOSITORY)
         {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
@@ -555,12 +623,15 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 failed |= label.is_null();
             }
             let (class, text, style) = match id {
-                LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE => (
+                LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED => (
                     "COMBOBOX",
                     match id {
                         LAYOUT => "Layout",
                         ALIGN => "Island position",
                         ZONE => "Activation zone",
+                        MONITOR => "Reveal settings for display",
+                        OUTSIDE => "Outside edge delay",
+                        SHARED => "Shared edge delay",
                         MEDIA_SIDE => "Media player side",
                         _ => "Search provider",
                     },
@@ -597,14 +668,23 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                     "Redirect Start web searches",
                     BS_AUTOCHECKBOX as u32,
                 ),
+                OVERRIDE => (
+                    "BUTTON",
+                    "Use custom reveal settings",
+                    BS_AUTOCHECKBOX as u32,
+                ),
+                TABS => ("SysTabControl32", "", 0),
+                CHECK_UPDATES => ("BUTTON", "Check again", BS_PUSHBUTTON as u32),
+                RELEASES => ("BUTTON", "View releases", BS_PUSHBUTTON as u32),
+                REPOSITORY => ("BUTTON", "Open GitHub repository", BS_PUSHBUTTON as u32),
                 FULLSCREEN => ("BUTTON", "Go fullscreen", BS_PUSHBUTTON as u32),
                 MENU => ("BUTTON", "Open menu", BS_PUSHBUTTON as u32),
                 ENGINE => (
                     "BUTTON",
                     if (*state).engine {
-                        "Stop engine"
+                        "Pause SmartTaskbar"
                     } else {
-                        "Start engine"
+                        "Resume SmartTaskbar"
                     },
                     BS_PUSHBUTTON as u32,
                 ),
@@ -652,12 +732,8 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         );
         add(
             ZONE as i32,
-            &["Entire edge", "Center half", "Island width"],
-            match s.draft.zone {
-                Zone::Entire => 0,
-                Zone::Center => 1,
-                Zone::Island => 2,
-            },
+            &["Entire edge", "Center half", "Taskbar width"],
+            0,
         );
         let choices: Vec<_> = s.choices.iter().map(String::as_str).collect();
         add(
@@ -715,8 +791,11 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         }
         (*state).paint.fonts((*state).dpi);
         (*state).paint.theme(hwnd);
+        tab_item(hwnd, TCM_INSERTITEMW, 0, "Appearance");
+        tab_item(hwnd, TCM_INSERTITEMW, 1, "Updates");
         style_controls(hwnd, state);
         (*state).ready = true;
+        monitor_controls(hwnd, state);
         layout(hwnd, state);
         reflect(hwnd, state);
     }
@@ -739,7 +818,7 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=ICON_SIZE {
+        for id in LAYOUT..=REPOSITORY {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
@@ -758,7 +837,11 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let w = client.right * 96 / dpi;
         let h = client.bottom * 96 / dpi;
         let page = Page::layout(w, h);
-        let total = page.footer + 52;
+        let total = if (*state).updates_tab {
+            344.max(h)
+        } else {
+            page.footer + 52
+        };
         (*state).page = page;
         (*state).scroll_max = (total - h).max(0);
         (*state).scroll = (*state).scroll.clamp(0, (*state).scroll_max);
@@ -773,10 +856,27 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             nTrackPos: 0,
         };
         SetScrollInfo(hwnd, SB_VERT, &info, 1);
-        for id in LAYOUT..=ICON_SIZE {
+        for id in LAYOUT..=REPOSITORY {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
+            let fixed = matches!(id, ENGINE | TABS | APPLY);
+            let show = match id {
+                ENGINE | TABS => true,
+                CHECK_UPDATES | RELEASES | REPOSITORY => (*state).updates_tab,
+                _ => !(*state).updates_tab && (fixed || b.y - offset >= 101),
+            };
+            let control = GetDlgItem(hwnd, id as i32);
+            let visibility = if show { SW_SHOWNA } else { SW_HIDE };
+            ShowWindow(control, visibility);
             if !label.is_null() {
+                ShowWindow(
+                    label,
+                    if b.y - 19 - offset >= 101 {
+                        visibility
+                    } else {
+                        SW_HIDE
+                    },
+                );
                 SetWindowPos(
                     label,
                     null_mut(),
@@ -787,16 +887,19 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
                     SWP_NOACTIVATE | SWP_NOZORDER,
                 );
             }
-            let height = if matches!(id, LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE) {
+            let height = if matches!(
+                id,
+                LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED
+            ) {
                 180
             } else {
                 b.h
             };
             SetWindowPos(
-                GetDlgItem(hwnd, id as i32),
+                control,
                 null_mut(),
                 b.x * dpi / 96,
-                (b.y - offset) * dpi / 96,
+                (b.y - if fixed { 0 } else { offset }) * dpi / 96,
                 b.w * dpi / 96,
                 height * dpi / 96,
                 SWP_NOACTIVATE | SWP_NOZORDER,
@@ -815,6 +918,125 @@ unsafe fn scroll(hwnd: HWND, state: *mut State, delta: i32) {
         }
     }
 }
+
+unsafe fn monitor_controls(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        let combo = GetDlgItem(hwnd, MONITOR as i32);
+        SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+        SendMessageW(
+            combo,
+            CB_ADDSTRING,
+            0,
+            wide("All displays · defaults").as_ptr() as isize,
+        );
+        let mut selected = 0;
+        for (i, monitor) in s.monitors.iter().enumerate() {
+            SendMessageW(
+                combo,
+                CB_ADDSTRING,
+                0,
+                wide(&monitor.label).as_ptr() as isize,
+            );
+            if s.monitor.as_deref() == Some(monitor.id.as_str()) {
+                selected = i + 1;
+            }
+        }
+        if selected == 0 {
+            s.monitor = None;
+        }
+        SendMessageW(combo, CB_SETCURSEL, selected, 0);
+        reveal_controls(hwnd, state);
+    }
+}
+
+unsafe fn select_monitor(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        let selected = SendDlgItemMessageW(hwnd, MONITOR as i32, CB_GETCURSEL, 0, 0);
+        s.monitor = selected
+            .checked_sub(1)
+            .and_then(|i| s.monitors.get(i as usize))
+            .map(|m| m.id.clone());
+        reveal_controls(hwnd, state);
+    }
+}
+
+unsafe fn reveal_controls(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &*state;
+        let reveal = s.draft.reveal(s.monitor.as_deref());
+        let custom = s
+            .monitor
+            .as_ref()
+            .is_some_and(|key| s.draft.monitor_reveal.contains_key(key));
+        let override_box = GetDlgItem(hwnd, OVERRIDE as i32);
+        EnableWindow(override_box, s.monitor.is_some() as i32);
+        SendMessageW(override_box, BM_SETCHECK, custom as usize, 0);
+        let zone = match reveal.zone {
+            Zone::Entire => 0,
+            Zone::Center => 1,
+            Zone::Island => 2,
+        };
+        SendDlgItemMessageW(hwnd, ZONE as i32, CB_SETCURSEL, zone, 0);
+        let editable = (s.monitor.is_none() || custom) as i32;
+        EnableWindow(GetDlgItem(hwnd, ZONE as i32), editable);
+        for (id, selected, options) in [
+            (
+                OUTSIDE,
+                reveal.outside_ms,
+                &[0, 80, 120, 180, 250, 400, 600, 800, 1000][..],
+            ),
+            (
+                SHARED,
+                reveal.shared_ms,
+                &[150, 220, 300, 400, 600, 800, 1000][..],
+            ),
+        ] {
+            let combo = GetDlgItem(hwnd, id as i32);
+            SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+            let mut values = options.to_vec();
+            if !values.contains(&selected) {
+                values.push(selected);
+                values.sort_unstable();
+            }
+            for (index, ms) in values.into_iter().enumerate() {
+                let label = if ms == 0 {
+                    "Instant".into()
+                } else {
+                    format!("{ms} ms")
+                };
+                SendMessageW(combo, CB_ADDSTRING, 0, wide(&label).as_ptr() as isize);
+                SendMessageW(combo, CB_SETITEMDATA, index, ms as isize);
+                if ms == selected {
+                    SendMessageW(combo, CB_SETCURSEL, index, 0);
+                }
+            }
+            EnableWindow(combo, editable);
+        }
+        reflect(hwnd, state);
+    }
+}
+
+unsafe fn change_override(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        if let Some(key) = &s.monitor {
+            if SendDlgItemMessageW(hwnd, OVERRIDE as i32, BM_GETCHECK, 0, 0) == BST_CHECKED as isize
+            {
+                let inherited = s.draft.reveal(None);
+                s.draft
+                    .monitor_reveal
+                    .entry(key.clone())
+                    .or_insert(inherited);
+            } else {
+                s.draft.monitor_reveal.remove(key);
+            }
+        }
+        reveal_controls(hwnd, state);
+    }
+}
+
 unsafe fn read_controls(hwnd: HWND, state: *mut State) {
     unsafe {
         let sel = |id| SendDlgItemMessageW(hwnd, id, CB_GETCURSEL, 0, 0);
@@ -828,11 +1050,33 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
             2 => Alignment::Right,
             _ => Alignment::Center,
         };
-        s.draft.zone = match sel(ZONE as i32) {
+        let delay = |id| {
+            u16::try_from(SendDlgItemMessageW(
+                hwnd,
+                id,
+                CB_GETITEMDATA,
+                sel(id) as usize,
+                0,
+            ))
+            .ok()
+        };
+        let mut reveal = s.draft.reveal(s.monitor.as_deref());
+        reveal.zone = match sel(ZONE as i32) {
             1 => Zone::Center,
             2 => Zone::Island,
             _ => Zone::Entire,
         };
+        reveal.outside_ms = delay(OUTSIDE as i32).unwrap_or(reveal.outside_ms);
+        reveal.shared_ms = delay(SHARED as i32).unwrap_or(reveal.shared_ms);
+        if let Some(key) = &s.monitor {
+            if let Some(setting) = s.draft.monitor_reveal.get_mut(key) {
+                *setting = reveal;
+            }
+        } else {
+            s.draft.zone = reveal.zone;
+            s.draft.outside_dwell_ms = reveal.outside_ms;
+            s.draft.shared_dwell_ms = reveal.shared_ms;
+        }
         s.draft.radius = slider(RADIUS as i32);
         s.draft.transparency = slider(TRANSPARENCY as i32);
         s.draft.icon_size = slider(ICON_SIZE as i32);
@@ -899,42 +1143,187 @@ unsafe fn save(hwnd: HWND, state: *mut State) {
 
 unsafe fn engine(hwnd: HWND, state: *mut State) {
     unsafe {
-        let running = crate::engine_running();
-        let result = if running {
-            crate::desktop::request_stop()
+        let s = &mut *state;
+        let result = if crate::engine_running() {
+            crate::pause(&s.path)
         } else {
-            crate::start_engine(&(*state).path)
+            crate::resume(&s.path)
         };
         match result {
             Ok(()) => {
-                (*state).engine = !running;
-                (*state).status = if running {
-                    "Engine stop requested."
-                } else {
-                    "Engine start requested."
-                }
-                .into();
+                s.transition_until = Some(Instant::now() + std::time::Duration::from_secs(30));
+                SetTimer(hwnd, ENGINE_TIMER, 250, None);
             }
-            Err(error) => {
-                (*state).engine = crate::engine_running();
-                MessageBoxW(
-                    hwnd,
-                    wide(&error).as_ptr(),
-                    wide("SmartTaskbar engine").as_ptr(),
-                    MB_OK | MB_ICONERROR,
-                );
-            }
+            Err(error) => s.status = error,
         }
+        sync_engine(hwnd, state);
+    }
+}
+
+unsafe fn sync_engine(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        s.paused = crate::is_paused(&s.path);
+        s.engine = crate::engine_running();
+        let settling = s.paused && s.engine;
+        if settling && s.transition_until.is_none() {
+            s.transition_until = Some(Instant::now() + std::time::Duration::from_secs(30));
+        }
+        let pausing = settling
+            && s.transition_until
+                .is_some_and(|until| Instant::now() < until);
+        if !pausing {
+            KillTimer(hwnd, ENGINE_TIMER);
+            if !settling {
+                s.transition_until = None;
+            }
+        } else {
+            SetTimer(hwnd, ENGINE_TIMER, 250, None);
+        }
+        let button = GetDlgItem(hwnd, ENGINE as i32);
         SetWindowTextW(
-            GetDlgItem(hwnd, ENGINE as i32),
-            wide(if (*state).engine {
-                "Stop engine"
+            button,
+            wide(if pausing {
+                "Pausing…"
+            } else if s.engine {
+                "Pause SmartTaskbar"
             } else {
-                "Start engine"
+                "Resume SmartTaskbar"
             })
             .as_ptr(),
         );
+        EnableWindow(button, (!pausing) as i32);
         redraw(hwnd);
+    }
+}
+
+unsafe fn tab_item(hwnd: HWND, message: u32, index: usize, caption: &str) {
+    unsafe {
+        let mut name = wide(caption);
+        let mut item = TCITEMW {
+            mask: TCIF_TEXT,
+            pszText: name.as_mut_ptr(),
+            ..Default::default()
+        };
+        SendDlgItemMessageW(
+            hwnd,
+            TABS as i32,
+            message,
+            index,
+            (&mut item as *mut TCITEMW) as isize,
+        );
+    }
+}
+
+unsafe fn switch_tab(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        let updates = SendDlgItemMessageW(hwnd, TABS as i32, TCM_GETCURSEL, 0, 0) == 1;
+        if updates == s.updates_tab {
+            return;
+        }
+        s.updates_tab = updates;
+        if updates {
+            s.settings_scroll = s.scroll;
+            s.scroll = 0;
+            s.demo.hot = None;
+            s.demo.down = false;
+            s.demo.over_edge = false;
+            s.demo.last = None;
+            KillTimer(hwnd, TIMER);
+            KillTimer(hwnd, ICON_TIMER);
+        } else {
+            s.scroll = s.settings_scroll;
+            if !s.paint.receive_icons() || s.paint.refresh_icons() {
+                SetTimer(hwnd, ICON_TIMER, 90, None);
+            }
+            update_animation(hwnd, state);
+        }
+        layout(hwnd, state);
+    }
+}
+
+unsafe fn check_updates(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        if s.update_job.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let launched = std::thread::Builder::new()
+            .name("SmartTaskbar updates".into())
+            .spawn(move || {
+                let _ = tx.send(updates::check());
+            });
+        if launched.is_ok() {
+            s.update_job = Some(rx);
+            s.update_status = "Checking GitHub…".into();
+            EnableWindow(GetDlgItem(hwnd, CHECK_UPDATES as i32), 0);
+            SetTimer(hwnd, UPDATE_TIMER, 175, None);
+        } else {
+            s.update_status = "The update check could not start.".into();
+        }
+        redraw(hwnd);
+    }
+}
+
+unsafe fn receive_updates(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        let Some(job) = &s.update_job else { return };
+        let result = match job.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("The update check could not finish.".into())
+            }
+        };
+        s.update_job = None;
+        KillTimer(hwnd, UPDATE_TIMER);
+        EnableWindow(GetDlgItem(hwnd, CHECK_UPDATES as i32), 1);
+        if let Ok(status) = &result {
+            s.update_available = matches!(status, updates::Status::New(_));
+        }
+        s.update_status = match result {
+            Ok(updates::Status::New(version)) => format!("Version {version} is available."),
+            Ok(updates::Status::Current) => "You're up to date.".into(),
+            Ok(updates::Status::NoRelease) => "There are no published stable releases yet.".into(),
+            Err(error) => error,
+        };
+        tab_item(
+            hwnd,
+            TCM_SETITEMW,
+            1,
+            if s.update_available {
+                "Updates • New"
+            } else {
+                "Updates"
+            },
+        );
+        redraw(hwnd);
+    }
+}
+
+unsafe fn open_github(hwnd: HWND, state: *mut State, id: u16) {
+    unsafe {
+        let target = if id == RELEASES {
+            format!("{}/releases", updates::REPOSITORY)
+        } else {
+            updates::REPOSITORY.into()
+        };
+        if ShellExecuteW(
+            hwnd,
+            wide("open").as_ptr(),
+            wide(&target).as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        ) as usize
+            <= 32
+        {
+            (*state).update_status = "Windows could not open GitHub in the browser.".into();
+            redraw(hwnd);
+        }
     }
 }
 
@@ -1045,7 +1434,10 @@ mod tests {
         let narrow = Page::layout(600, 640);
         assert!(wide.settings.x >= wide.preview.x + wide.preview.w);
         assert!(narrow.settings.y >= narrow.preview.y + narrow.preview.h);
-        assert!(narrow.control(APPLY).y > narrow.control(MEDIA_SIDE).y);
+        assert!(narrow.control(APPLY).y < narrow.preview.y);
+        let tabs = narrow.control(TABS);
+        assert!(tabs.x + tabs.w < narrow.control(APPLY).x);
+        assert!(narrow.control(SHARED).y < narrow.control(MEDIA_SIDE).y);
     }
     #[test]
     fn preview_keeps_menu_visible_until_closed_and_honors_reduced_motion() {

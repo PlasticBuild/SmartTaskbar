@@ -9,6 +9,7 @@ mod migrate;
 mod policy;
 mod profiles;
 mod settings;
+mod updates;
 
 use settings::Settings;
 use std::os::windows::ffi::OsStrExt;
@@ -60,8 +61,11 @@ enum Action {
     Settings,
     Run,
     Stop,
+    Pause,
+    Resume,
     Inspect,
     Check,
+    CheckUpdates,
     Import(PathBuf),
     Recover,
     PrepareUpdate,
@@ -89,12 +93,15 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<Pat
             Some("--settings") => Action::Settings,
             Some("--run") => Action::Run,
             Some("--stop") => Action::Stop,
+            Some("--pause") => Action::Pause,
+            Some("--resume") => Action::Resume,
             Some("--import-appearance") => Action::Import(PathBuf::from(
                 it.next()
                     .ok_or("Supply the exported appearance JSON file.")?,
             )),
             Some("--inspect") => Action::Inspect,
             Some("--check") => Action::Check,
+            Some("--check-updates") => Action::CheckUpdates,
             Some("--recover-shell") => Action::Recover,
             Some("--prepare-update") => Action::PrepareUpdate,
             Some("--configure-style") => Action::ConfigureStyle,
@@ -136,6 +143,46 @@ pub(crate) fn engine_running() -> bool {
         CloseHandle(handle);
     }
     true
+}
+
+fn pause_marker(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".paused");
+    PathBuf::from(name)
+}
+
+pub(crate) fn is_paused(path: &Path) -> bool {
+    pause_marker(path).is_file()
+}
+
+pub(crate) fn pause(path: &Path) -> Result<(), String> {
+    let _lock = SingleInstance::lock(r"Local\SmartTaskbarRust.Pause")?;
+    settings::atomic_write(&pause_marker(path), b"paused\n")?;
+    // A starting controller may not have opened its stop event yet. It also
+    // checks the marker before startup and after a preference directory change.
+    if engine_running() {
+        let _ = desktop::request_stop();
+    }
+    Ok(())
+}
+
+pub(crate) fn resume(path: &Path) -> Result<(), String> {
+    let _lock = SingleInstance::lock(r"Local\SmartTaskbarRust.Pause")?;
+    let marker = pause_marker(path);
+    let paused = marker.is_file();
+    if paused && engine_running() {
+        return Err("SmartTaskbar is still restoring the Windows taskbar.".into());
+    }
+    if paused {
+        std::fs::remove_file(&marker).map_err(|err| err.to_string())?;
+    }
+    if let Err(error) = start_engine(path) {
+        if paused {
+            settings::atomic_write(&marker, b"paused\n")?;
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub(crate) fn start_engine(path: &Path) -> Result<(), String> {
@@ -230,9 +277,13 @@ fn execute() -> Result<(), String> {
     if action == Action::ConfigureStyle {
         return integrations::configure_packaged_style();
     }
+    if action == Action::CheckUpdates {
+        println!("{:?}", updates::check()?);
+        return Ok(());
+    }
     if action == Action::Help {
         println!(
-            "smarttaskbar-rs [--settings | --run | --stop | --inspect | --check | --import-appearance PROFILE] [--config FILE]"
+            "smarttaskbar-rs [--settings | --run | --stop | --pause | --resume | --inspect | --check | --import-appearance PROFILE] [--config FILE]"
         );
         return Ok(());
     }
@@ -243,6 +294,12 @@ fn execute() -> Result<(), String> {
     }
     if action == Action::VerifyStyle {
         return integrations::verify_packaged_style(&path.with_file_name("Windhawk"));
+    }
+    if action == Action::Pause {
+        return pause(&path);
+    }
+    if action == Action::Resume {
+        return resume(&path);
     }
     if let Action::Import(profile) = &action {
         let bytes = std::fs::read(profile).map_err(|e| format!("{}: {e}", profile.display()))?;
@@ -267,7 +324,13 @@ fn execute() -> Result<(), String> {
             Ok(())
         }
         Action::Run => {
+            if is_paused(&path) {
+                return Ok(());
+            }
             let _instance = SingleInstance::lock(r"Local\SmartTaskbarRust.Engine")?;
+            if is_paused(&path) {
+                return Ok(());
+            }
             if csharp_running() {
                 return Err("The C# SmartTaskbar engine is already managing this desktop. Close it before running the Rust engine.".into());
             }
@@ -312,5 +375,20 @@ mod tests {
     #[test]
     fn refuses_ambiguous_actions() {
         assert!(parse(["--check", "--run"].map(Into::into)).is_err());
+    }
+
+    #[test]
+    fn pause_marker_is_separate_for_each_preferences_file() {
+        let a = Path::new("F:/Tests/prefs.json");
+        assert_eq!(pause_marker(a), Path::new("F:/Tests/prefs.json.paused"));
+        assert_ne!(
+            pause_marker(a),
+            pause_marker(Path::new("F:/Tests/other.json"))
+        );
+        assert_eq!(parse(["--pause"].map(Into::into)).unwrap().0, Action::Pause);
+        assert_eq!(
+            parse(["--resume"].map(Into::into)).unwrap().0,
+            Action::Resume
+        );
     }
 }

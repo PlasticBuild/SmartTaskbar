@@ -6,7 +6,6 @@ Unicode true
 ${StrStr}
 
 !define PRODUCT "SmartTaskbar"
-!define VERSION "0.1.0"
 !define APP "smarttaskbar-rs.exe"
 !define UNINSTALL "Software\Microsoft\Windows\CurrentVersion\Uninstall\SmartTaskbar"
 !define RUN "Software\Microsoft\Windows\CurrentVersion\Run"
@@ -21,7 +20,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 AutoCloseWindow true
 ShowInstDetails show
-VIProductVersion "0.1.0.0"
+VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "SmartTaskbar"
 VIAddVersionKey "FileDescription" "SmartTaskbar Windows 11 Setup"
 VIAddVersionKey "FileVersion" "${VERSION}"

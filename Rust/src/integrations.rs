@@ -21,7 +21,13 @@ mod shell;
 pub use shell::{configure_packaged_style, stop_packaged_style, verify_packaged_style};
 
 pub type Geometry = Option<(i32, i32, i32)>;
-type Layout = (Geometry, bool, crate::media::Reserve);
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Layout {
+    pub geometry: Geometry,
+    pub flyout_open: bool,
+    pub reserve: crate::media::Reserve,
+    pub native_touch: bool,
+}
 enum Update {
     Desktop(Layout),
     Settings(Settings),
@@ -35,11 +41,10 @@ fn menu_open() -> bool {
         .lock()
         .ok()
         .and_then(|state| *state)
-        .is_some_and(|(_, open, _)| open)
+        .is_some_and(|layout| layout.flyout_open)
 }
 
-pub fn layout_changed(geometry: Geometry, flyout_open: bool, reserve: crate::media::Reserve) {
-    let next = (geometry, flyout_open, reserve);
+pub fn layout_changed(next: Layout) {
     let Ok(mut last) = LAST_LAYOUT.lock() else {
         return;
     };
@@ -187,7 +192,6 @@ impl Session {
             .ok_or("Settings directory is missing.")?
             .to_owned();
         let mut shell = shell::Host::open(&directory)?;
-        let geometry = None;
         let mut redirect = search::Redirect::new(&directory);
         if settings.search_redirect {
             redirect.configure(settings)?;
@@ -203,11 +207,12 @@ impl Session {
         let mut current = settings.clone();
         let worker = thread::spawn(move || {
             let mut next = current.clone();
-            let mut layout = (geometry, false, crate::media::Reserve::default());
-            let mut applied_layout = (geometry, layout.2);
+            let mut layout = Layout::default();
+            let mut applied_layout = (None, layout.reserve);
             let mut retry = None;
             let mut observed = false;
             let mut styled = false;
+            let mut native_touch = false;
             let settle = Duration::from_millis(350);
             let recover = Duration::from_secs(3);
             loop {
@@ -220,22 +225,47 @@ impl Session {
                     Ok(Update::Desktop(next)) => {
                         layout = next;
                         observed = true;
-                        retry = (!layout.1).then_some(settle);
+                        retry = (!layout.flyout_open || layout.native_touch).then_some(settle);
                         continue;
                     }
                     Ok(Update::Settings(requested)) => {
                         next = requested;
-                        retry = (observed && !layout.1).then_some(settle);
+                        retry = (observed && (!layout.flyout_open || layout.native_touch))
+                            .then_some(settle);
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
                 retry = None;
-                let requested = (layout.0, layout.2);
-                if !styled || next != current || applied_layout != requested {
+                if layout.native_touch != native_touch {
+                    let result = if layout.native_touch {
+                        match shell.as_mut() {
+                            Some(host) => host.restore().map(|()| None),
+                            None => Ok(None),
+                        }
+                    } else {
+                        shell::Host::open(&directory)
+                    };
+                    match result {
+                        Ok(host) => {
+                            shell = host;
+                            native_touch = layout.native_touch;
+                            styled = false;
+                        }
+                        Err(error) => {
+                            record(&directory, &error);
+                            retry = Some(recover);
+                            continue;
+                        }
+                    }
+                }
+                let requested = (layout.geometry, layout.reserve);
+                if !native_touch
+                    && (!styled || !next.same_shell_style(&current) || applied_layout != requested)
+                {
                     if let Some(host) = shell.as_mut() {
-                        match host.apply(&next, layout.0, layout.2) {
-                            Ok(true) => {}
+                        match host.apply(&next, layout.geometry, layout.reserve) {
+                            Ok(true) => crate::desktop::style_changed(),
                             Ok(false) => {
                                 retry = Some(settle);
                                 continue;
@@ -247,18 +277,18 @@ impl Session {
                             }
                         }
                     }
-                    if (next.search_redirect != current.search_redirect
-                        || (next.search_redirect && next.web_engine != current.web_engine))
-                        && let Err(e) = redirect.configure(&next)
-                    {
-                        record(&directory, &e);
-                        retry = Some(recover);
-                        continue;
-                    }
-                    current.clone_from(&next);
                     applied_layout = requested;
                     styled = true;
                 }
+                if (next.search_redirect != current.search_redirect
+                    || (next.search_redirect && next.web_engine != current.web_engine))
+                    && let Err(e) = redirect.configure(&next)
+                {
+                    record(&directory, &e);
+                    retry = Some(recover);
+                    continue;
+                }
+                current.clone_from(&next);
             }
             if let Some(host) = shell.as_mut()
                 && let Err(e) = host.restore()

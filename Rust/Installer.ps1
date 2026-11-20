@@ -89,6 +89,8 @@ foreach ($asset in $sources) {
 
 $icon = Join-Path $repo 'Sources/SmartTaskbar.Win10/Resources/logo_blue_128.ico'
 $installer = Join-Path $output 'SmartTaskbar-Setup.exe'
-& $compilerPath '/V3' "/DPAYLOAD=$build" "/DOUTPUT=$installer" "/DICON=$icon" (Join-Path $PSScriptRoot 'SmartTaskbar.nsi')
+$version = [regex]::Match((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -Raw), '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+if (!$version.Success) { throw 'The installer requires a numeric major.minor.patch version.' }
+& $compilerPath '/V3' "/DPAYLOAD=$build" "/DOUTPUT=$installer" "/DICON=$icon" "/DVERSION=$($version.Groups[1].Value)" (Join-Path $PSScriptRoot 'SmartTaskbar.nsi')
 if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $installer)) { throw 'Could not build SmartTaskbar Setup.' }
 Get-Item -LiteralPath $installer
