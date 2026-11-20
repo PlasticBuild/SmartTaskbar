@@ -1,0 +1,258 @@
+#![windows_subsystem = "windows"]
+
+mod appearance;
+mod desktop;
+mod integrations;
+mod join;
+mod migrate;
+mod policy;
+mod profiles;
+mod settings;
+
+use settings::Settings;
+use std::os::windows::ffi::OsStrExt;
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    path::{Path, PathBuf},
+};
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
+    System::Threading::CreateMutexW,
+    UI::WindowsAndMessaging::{FindWindowW, MB_ICONERROR, MB_OK, MessageBoxW},
+};
+
+fn wide(s: &OsStr) -> Vec<u16> {
+    s.encode_wide().chain([0]).collect()
+}
+
+struct SingleInstance(HANDLE);
+impl SingleInstance {
+    fn lock(name: &str) -> Result<Self, String> {
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide(OsStr::new(name)).as_ptr()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+        let guard = Self(handle);
+        if already_exists {
+            Err("SmartTaskbar Rust is already running in this session.".into())
+        } else {
+            Ok(guard)
+        }
+    }
+}
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Action {
+    Settings,
+    Run,
+    Stop,
+    Inspect,
+    Check,
+    Import(PathBuf),
+    Recover,
+    Help,
+}
+
+fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<PathBuf>), String> {
+    let mut it = args.into_iter();
+    let mut action = None;
+    let mut path = None;
+    while let Some(arg) = it.next() {
+        if arg == "--config" {
+            if path.is_some() {
+                return Err("Only one configuration file can be selected.".into());
+            }
+            path = Some(PathBuf::from(
+                it.next().ok_or("Supply a filename after --config.")?,
+            ));
+            continue;
+        }
+        let next = match arg.to_str() {
+            Some("--settings") => Action::Settings,
+            Some("--run") => Action::Run,
+            Some("--stop") => Action::Stop,
+            Some("--import-appearance") => Action::Import(PathBuf::from(
+                it.next()
+                    .ok_or("Supply the exported appearance JSON file.")?,
+            )),
+            Some("--inspect") => Action::Inspect,
+            Some("--check") => Action::Check,
+            Some("--recover-shell") => Action::Recover,
+            Some("--help" | "-h") => Action::Help,
+            _ => return Err(format!("Unknown argument {}", arg.to_string_lossy())),
+        };
+        if action.replace(next).is_some() {
+            return Err("Choose one action at a time.".into());
+        }
+    }
+    Ok((action.unwrap_or(Action::Settings), path))
+}
+
+fn csharp_running() -> bool {
+    !unsafe {
+        FindWindowW(
+            std::ptr::null(),
+            wide(OsStr::new("SmartTaskbar Monitor")).as_ptr(),
+        )
+    }
+    .is_null()
+}
+
+pub(crate) fn engine_running() -> bool {
+    use windows_sys::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    let handle = unsafe {
+        OpenMutexW(
+            SYNCHRONIZATION_SYNCHRONIZE,
+            0,
+            wide(OsStr::new(r"Local\SmartTaskbarRust.Engine")).as_ptr(),
+        )
+    };
+    if handle.is_null() {
+        return false;
+    }
+    unsafe {
+        CloseHandle(handle);
+    }
+    true
+}
+
+pub(crate) fn start_engine(path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    if engine_running() {
+        return Ok(());
+    }
+    if csharp_running() {
+        return Err("The C# taskbar is already controlling this desktop.".into());
+    }
+    let exe = env::current_exe().map_err(|e| e.to_string())?;
+    let mut child = std::process::Command::new(exe)
+        .arg("--run")
+        .arg("--config")
+        .arg(path)
+        .creation_flags(0x08000000)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    for _ in 0..20 {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!("The engine could not start ({status})."));
+        }
+        if engine_running() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    Err("The taskbar engine did not report ready.".into())
+}
+
+pub(crate) fn apply_settings(path: &Path, old: &Settings, new: &Settings) -> Result<(), String> {
+    let _lock = SingleInstance::lock(r"Local\SmartTaskbarRust.SettingsWrite")?;
+    new.validate()?;
+    if Settings::load(path)? != *old {
+        return Err("Settings changed in another window. Reopen settings before applying.".into());
+    }
+    if new.start_at_sign_in != old.start_at_sign_in {
+        integrations::sign_in(path, new.start_at_sign_in)?;
+    }
+    if let Err(err) = new.save(path) {
+        if new.start_at_sign_in != old.start_at_sign_in {
+            integrations::sign_in(path, old.start_at_sign_in)?;
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn execute() -> Result<(), String> {
+    let (action, path) = parse(env::args_os().skip(1))?;
+    if action == Action::Recover {
+        return desktop::recover();
+    }
+    if action == Action::Stop {
+        return desktop::request_stop();
+    }
+    if action == Action::Help {
+        println!(
+            "smarttaskbar-rs [--settings | --run | --stop | --inspect | --check | --import-appearance PROFILE] [--config FILE]"
+        );
+        return Ok(());
+    }
+    let path = std::path::absolute(path.unwrap_or(settings::default_path()?))
+        .map_err(|e| e.to_string())?;
+    if let Action::Import(profile) = &action {
+        let bytes = std::fs::read(profile).map_err(|e| format!("{}: {e}", profile.display()))?;
+        let value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        migrate::from_export(&value)?.save_new(&path)?;
+        println!("Imported appearance into {}", path.display());
+        return Ok(());
+    }
+    let settings = Settings::load(&path)?;
+    match action {
+        Action::Settings => appearance::show(&path),
+        Action::Inspect => {
+            println!("{}", desktop::inspect()?);
+            Ok(())
+        }
+        Action::Check => {
+            integrations::check_profiles(&settings)?;
+            println!(
+                "Configuration and four shell profiles validated. Desktop and sign-in settings untouched."
+            );
+            Ok(())
+        }
+        Action::Run => {
+            let _instance = SingleInstance::lock(r"Local\SmartTaskbarRust.Engine")?;
+            if csharp_running() {
+                return Err("The C# SmartTaskbar engine is already managing this desktop. Close it before running the Rust engine.".into());
+            }
+            let _session = integrations::Session::start(&path, &settings)?;
+            desktop::run(&settings, &path)
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn main() {
+    if let Err(error) = execute() {
+        eprintln!("{error}");
+        if env::args_os().len() == 1 || env::args_os().any(|v| v == "--settings") {
+            unsafe {
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    wide(OsStr::new(&error)).as_ptr(),
+                    wide(OsStr::new("SmartTaskbar Rust")).as_ptr(),
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        }
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn opening_the_executable_opens_preferences() {
+        assert_eq!(parse([]).unwrap(), (Action::Settings, None));
+    }
+    #[test]
+    fn a_settings_file_can_contain_spaces() {
+        let (act, path) =
+            parse(["--config", "F:/Test Dir/preferences.json", "--check"].map(Into::into)).unwrap();
+        assert_eq!(act, Action::Check);
+        assert_eq!(path.unwrap(), Path::new("F:/Test Dir/preferences.json"));
+    }
+    #[test]
+    fn refuses_ambiguous_actions() {
+        assert!(parse(["--check", "--run"].map(Into::into)).is_err());
+    }
+}
