@@ -15,10 +15,15 @@ internal enum TaskbarLayout
     Custom
 }
 
-internal readonly record struct AppearanceOptions(TaskbarLayout Layout, int Radius = 8, int Transparency = 40)
+internal readonly record struct AppearanceOptions(TaskbarLayout Layout, int Radius = 8, int Transparency = 40,
+    int HoverLift = AppearanceOptions.DefaultHoverLift, int ClickDepth = AppearanceOptions.DefaultClickDepth)
 {
     public const int MaxRadius = 24;
     public const int MaxTransparency = 85;
+    public const int DefaultHoverLift = 3;
+    public const int DefaultClickDepth = 2;
+    public const int MaxHoverLift = 7;
+    public const int MaxClickDepth = 5;
 }
 
 internal sealed class TaskbarStyles(string folder)
@@ -39,6 +44,8 @@ internal sealed class TaskbarStyles(string folder)
 
     private sealed record Profile(bool Enabled, JsonElement Settings)
     {
+        public bool HasMotionSettings => ReadMotionSetting("SmartTaskbarHoverLift=") is not null;
+
         public AppearanceOptions Options
         {
             get
@@ -47,21 +54,36 @@ internal sealed class TaskbarStyles(string folder)
                     return new(TaskbarLayout.Windows);
                 var radius = ReadNumber(Settings, "styleConstants[0]", "SmartTaskbarRadius=", 8);
                 var transparency = ReadNumber(Settings, "styleConstants[1]", "SmartTaskbarTransparency=", 40);
+                var hover = ReadMotionSetting("SmartTaskbarHoverLift=") ?? AppearanceOptions.DefaultHoverLift;
+                var click = ReadMotionSetting("SmartTaskbarClickDepth=") ?? AppearanceOptions.DefaultClickDepth;
                 foreach (var layout in new[] { TaskbarLayout.FullWidth, TaskbarLayout.Island })
                 {
-                    var options = new AppearanceOptions(layout, radius, transparency);
-                    if (JsonElement.DeepEquals(Settings, BuildPreset(options)))
+                    var options = new AppearanceOptions(layout, radius, transparency, hover, click);
+                    if (JsonElement.DeepEquals(Settings, BuildPreset(options)) ||
+                        JsonElement.DeepEquals(Settings, BuildPreset(options, includeMotion: false)))
                         return options;
                 }
                 return new(TaskbarLayout.Custom);
             }
         }
+
+        private int? ReadMotionSetting(string prefix)
+        {
+            foreach (var entry in Settings.EnumerateObject())
+            {
+                if (entry.Name.StartsWith("styleConstants[", StringComparison.Ordinal) &&
+                    entry.Value.GetString() is { } value && value.StartsWith(prefix, StringComparison.Ordinal) &&
+                    int.TryParse(value.AsSpan(prefix.Length), CultureInfo.InvariantCulture, out var number))
+                    return number;
+            }
+            return null;
+        }
     }
 
-    public async Task<(AppearanceOptions Options, bool Running)> ReadAsync()
+    public async Task<(AppearanceOptions Options, bool Running, bool SavedWithMotion)> ReadAsync()
     {
         var profile = await ReadProfileAsync();
-        return (profile.Options, IsHostRunning(rejectOtherInstall: false));
+        return (profile.Options, IsHostRunning(rejectOtherInstall: false), profile.HasMotionSettings);
     }
 
     public async Task ApplyAsync(AppearanceOptions options)
@@ -202,7 +224,7 @@ internal sealed class TaskbarStyles(string folder)
         return fallback;
     }
 
-    private static JsonElement BuildPreset(AppearanceOptions options)
+    private static JsonElement BuildPreset(AppearanceOptions options, bool includeMotion = true)
     {
         if (options.Layout is not (TaskbarLayout.FullWidth or TaskbarLayout.Island))
             throw new ArgumentOutOfRangeException(nameof(options));
@@ -216,8 +238,54 @@ internal sealed class TaskbarStyles(string folder)
             .Replace("__RADIUS__", radius.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("__TRANSPARENCY__", transparency.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("__TINT_OPACITY__", (1 - transparency / 100d).ToString("0.00", CultureInfo.InvariantCulture), StringComparison.Ordinal);
+        if (includeMotion)
+        {
+            var settings = JsonSerializer.Deserialize<Dictionary<string, string>>(preset)!;
+            AddIconMotion(settings, options);
+            return JsonSerializer.SerializeToElement(settings);
+        }
+
         using var json = JsonDocument.Parse(preset);
         return json.RootElement.Clone();
+    }
+
+    private static void AddIconMotion(Dictionary<string, string> settings, AppearanceOptions options)
+    {
+        var hover = Math.Clamp(options.HoverLift, 0, AppearanceOptions.MaxHoverLift);
+        var click = Math.Clamp(options.ClickDepth, 0, AppearanceOptions.MaxClickDepth);
+        var constant = settings.Keys.Count(key => key.StartsWith("styleConstants[", StringComparison.Ordinal));
+        settings[$"styleConstants[{constant}]"] = $"SmartTaskbarHoverLift={hover}";
+        settings[$"styleConstants[{constant + 1}]"] = $"SmartTaskbarClickDepth={click}";
+        if (hover == 0 && click == 0)
+            return;
+
+        var target = settings.Keys.Count(key => key.StartsWith("controlStyles[", StringComparison.Ordinal) &&
+            key.EndsWith(".target", StringComparison.Ordinal));
+        var group = $"controlStyles[{target}]";
+        // Transform the image so the shell keeps its original button bounds and click handling.
+        settings[group + ".target"] =
+            "Taskbar.TaskListButton > Grid#IconPanel@CommonStates > Image#Icon, " +
+            "Taskbar.TaskListButton > Taskbar.TaskListLabeledButtonPanel#IconPanel@CommonStates > Image#Icon";
+        var styles = new List<string>
+        {
+            "RenderTransformOrigin=0.5,0.5"
+        };
+
+        var hoverScale = 1 + hover * 0.035;
+        var pressScale = click == 0 ? hoverScale : 1 - click * 0.03;
+        foreach (var state in new[] { "Inactive", "Active", "MultiWindow", "RequestingAttention", "RequestingAttentionMulti" })
+        {
+            AddTransform(state + "PointerOver", hoverScale, -hover);
+            AddTransform(state + "Pressed", pressScale, click == 0 ? -hover : click);
+        }
+        for (var index = 0; index < styles.Count; index++)
+            settings[$"{group}.styles[{index}]"] = styles[index];
+
+        void AddTransform(string state, double scale, int y)
+        {
+            styles.Add(FormattableString.Invariant(
+                $"RenderTransform@{state}:=<CompositeTransform ScaleX=\"{scale:0.###}\" ScaleY=\"{scale:0.###}\" TranslateY=\"{y}\" />"));
+        }
     }
 
     private async Task<JsonElement> RunCliAsync(string[] arguments, string? input = null)

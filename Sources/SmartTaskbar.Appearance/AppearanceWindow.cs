@@ -15,8 +15,11 @@ internal sealed class AppearanceWindow : Form
     private readonly Label _status = new() { AutoSize = true, AccessibleName = "Layout status" };
     private readonly NumericUpDown _radius = new() { Minimum = 0, Maximum = AppearanceOptions.MaxRadius, Value = 8, AccessibleName = "Corner radius in pixels" };
     private readonly NumericUpDown _transparency = new() { Minimum = 0, Maximum = AppearanceOptions.MaxTransparency, Value = 40, Increment = 5, AccessibleName = "Transparency percentage" };
+    private readonly NumericUpDown _hoverLift = new() { Minimum = 0, Maximum = AppearanceOptions.MaxHoverLift, Value = AppearanceOptions.DefaultHoverLift, AccessibleName = "Hover lift in pixels" };
+    private readonly NumericUpDown _clickDepth = new() { Minimum = 0, Maximum = AppearanceOptions.MaxClickDepth, Value = AppearanceOptions.DefaultClickDepth, AccessibleName = "Click depth in pixels" };
     private AppearanceOptions _current = new(TaskbarLayout.Windows);
     private bool _running;
+    private bool _savedWithMotion;
     private bool _busy;
     private bool _available;
 
@@ -32,7 +35,7 @@ internal sealed class AppearanceWindow : Form
         Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
         BackColor = SystemInformation.HighContrast ? SystemColors.Window : Color.FromArgb(245, 247, 252);
         ForeColor = _text;
-        ClientSize = new Size(686, 454);
+        ClientSize = new Size(686, 486);
         MaximizeBox = false;
 
         var root = new TableLayoutPanel
@@ -40,10 +43,11 @@ internal sealed class AppearanceWindow : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(24, 18, 24, 20),
             ColumnCount = 1,
-            RowCount = 5
+            RowCount = 6
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -58,13 +62,14 @@ internal sealed class AppearanceWindow : Form
         };
         root.Controls.Add(title, 0, 0);
         root.Controls.Add(CreateOptions(), 0, 1);
-        root.Controls.Add(CreateGlassSettings(), 0, 2);
+        root.Controls.Add(CreateSettingsRow("Corner &radius (px)", _radius, "&Transparency (%)", _transparency, 16), 0, 2);
+        root.Controls.Add(CreateSettingsRow("&Hover lift (px)", _hoverLift, "C&lick depth (px)", _clickDepth, 8), 0, 3);
 
         _status.ForeColor = _muted;
         _status.Margin = new Padding(0, 12, 0, 10);
         _status.MaximumSize = new Size(620, 0);
         _status.Text = "Reading the current layout…";
-        root.Controls.Add(_status, 0, 3);
+        root.Controls.Add(_status, 0, 4);
 
         var footer = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -77,7 +82,7 @@ internal sealed class AppearanceWindow : Form
         _apply.Margin = Padding.Empty;
         _apply.FlatStyle = FlatStyle.System;
         footer.Controls.Add(_apply, 1, 0);
-        root.Controls.Add(footer, 0, 4);
+        root.Controls.Add(footer, 0, 5);
 
         AcceptButton = _apply;
         Shown += async (_, _) => await RunAsync(null);
@@ -85,6 +90,8 @@ internal sealed class AppearanceWindow : Form
         _island.CheckedChanged += (_, _) => RefreshButtons();
         _radius.ValueChanged += (_, _) => RefreshButtons();
         _transparency.ValueChanged += (_, _) => RefreshButtons();
+        _hoverLift.ValueChanged += (_, _) => RefreshButtons();
+        _clickDepth.ValueChanged += (_, _) => RefreshButtons();
         _apply.Click += async (_, _) => await RunAsync(Selection);
         _restore.LinkClicked += async (_, _) => await RunAsync(new AppearanceOptions(TaskbarLayout.Windows));
         FormClosing += (_, args) => args.Cancel = _busy && args.CloseReason == CloseReason.UserClosing;
@@ -95,26 +102,29 @@ internal sealed class AppearanceWindow : Form
         var display = Screen.FromHandle(Handle).WorkingArea;
         var available = SizeFromClientSize(Size.Empty);
         var width = Math.Min(LogicalToDeviceUnits(686), display.Width - available.Width);
-        var height = Math.Min(LogicalToDeviceUnits(454), display.Height - available.Height);
+        var height = Math.Min(LogicalToDeviceUnits(486), display.Height - available.Height);
         ClientSize = new Size(width, height);
         MinimumSize = SizeFromClientSize(new Size(Math.Min(width, LogicalToDeviceUnits(590)),
-            Math.Min(height, LogicalToDeviceUnits(398))));
+            Math.Min(height, LogicalToDeviceUnits(430))));
         CenterToScreen();
         base.OnLoad(args);
     }
 
-    private FlowLayoutPanel CreateGlassSettings()
+    private static FlowLayoutPanel CreateSettingsRow(string leftLabel, NumericUpDown left,
+        string rightLabel, NumericUpDown right, int top)
     {
-        var settings = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 16, 0, 0) };
-        settings.Controls.Add(new Label { Text = "Corner &radius (px)", AutoSize = true, Margin = new Padding(0, 4, 6, 0) });
-        _radius.Width = 65;
-        _radius.Margin = new Padding(0, 0, 18, 0);
-        settings.Controls.Add(_radius);
-        settings.Controls.Add(new Label { Text = "&Transparency (%)", AutoSize = true, Margin = new Padding(0, 4, 6, 0) });
-        _transparency.Width = 65;
-        _transparency.Margin = Padding.Empty;
-        settings.Controls.Add(_transparency);
+        var settings = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, top, 0, 0) };
+        AddField(leftLabel, left, 18);
+        AddField(rightLabel, right, 0);
         return settings;
+
+        void AddField(string label, NumericUpDown field, int spaceAfter)
+        {
+            settings.Controls.Add(new Label { Text = label, Width = 122, Margin = new Padding(0, 4, 6, 0) });
+            field.Width = 65;
+            field.Margin = new Padding(0, 0, spaceAfter, 0);
+            settings.Controls.Add(field);
+        }
     }
 
     private TableLayoutPanel CreateOptions()
@@ -143,6 +153,8 @@ internal sealed class AppearanceWindow : Form
             button.CheckedChanged += (_, _) => preview.Selected = button.Checked;
             _radius.ValueChanged += (_, _) => preview.SetGlass((int)_radius.Value, (int)_transparency.Value);
             _transparency.ValueChanged += (_, _) => preview.SetGlass((int)_radius.Value, (int)_transparency.Value);
+            _hoverLift.ValueChanged += (_, _) => preview.SetMotion((int)_hoverLift.Value, (int)_clickDepth.Value);
+            _clickDepth.ValueChanged += (_, _) => preview.SetMotion((int)_hoverLift.Value, (int)_clickDepth.Value);
             preview.Click += (_, _) =>
             {
                 if (button.Enabled)
@@ -168,7 +180,7 @@ internal sealed class AppearanceWindow : Form
     }
 
     private AppearanceOptions Selection => new(_island.Checked ? TaskbarLayout.Island : TaskbarLayout.FullWidth,
-        (int)_radius.Value, (int)_transparency.Value);
+        (int)_radius.Value, (int)_transparency.Value, (int)_hoverLift.Value, (int)_clickDepth.Value);
 
     private async Task RunAsync(AppearanceOptions? layout)
     {
@@ -182,13 +194,15 @@ internal sealed class AppearanceWindow : Form
                 await _styles.ApplyAsync(selection);
             }
 
-            (_current, _running) = await _styles.ReadAsync();
+            (_current, _running, _savedWithMotion) = await _styles.ReadAsync();
             if (layout is null)
             {
                 _fullWidth.Checked = _current.Layout != TaskbarLayout.Island;
                 _island.Checked = _current.Layout == TaskbarLayout.Island;
                 _radius.Value = _current.Radius;
                 _transparency.Value = _current.Transparency;
+                _hoverLift.Value = _current.HoverLift;
+                _clickDepth.Value = _current.ClickDepth;
             }
             _available = true;
             _status.Text = _current.Layout switch
@@ -213,8 +227,8 @@ internal sealed class AppearanceWindow : Form
     private void RefreshButtons()
     {
         _island.Enabled = _fullWidth.Enabled = !_busy;
-        _radius.Enabled = _transparency.Enabled = !_busy;
-        _apply.Enabled = _available && !_busy && (_current != Selection || !_running);
+        _radius.Enabled = _transparency.Enabled = _hoverLift.Enabled = _clickDepth.Enabled = !_busy;
+        _apply.Enabled = _available && !_busy && (_current != Selection || !_running || !_savedWithMotion);
         _restore.Enabled = _available && !_busy && _current.Layout != TaskbarLayout.Windows;
     }
 
@@ -223,6 +237,10 @@ internal sealed class AppearanceWindow : Form
         private bool _selected;
         private int _radius = 8;
         private int _transparency = 40;
+        private int _hoverLift = AppearanceOptions.DefaultHoverLift;
+        private int _clickDepth = AppearanceOptions.DefaultClickDepth;
+        private Point? _pointer;
+        private bool _pressed;
         [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
         public bool Selected
         {
@@ -234,6 +252,42 @@ internal sealed class AppearanceWindow : Form
         {
             _radius = radius;
             _transparency = transparency;
+            Invalidate();
+        }
+
+        public void SetMotion(int hoverLift, int clickDepth)
+        {
+            _hoverLift = hoverLift;
+            _clickDepth = clickDepth;
+            Invalidate();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs args)
+        {
+            base.OnMouseMove(args);
+            _pointer = args.Location;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs args)
+        {
+            base.OnMouseLeave(args);
+            _pointer = null;
+            _pressed = false;
+            Invalidate();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs args)
+        {
+            base.OnMouseDown(args);
+            _pressed = args.Button == MouseButtons.Left;
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs args)
+        {
+            base.OnMouseUp(args);
+            _pressed = false;
             Invalidate();
         }
 
@@ -290,7 +344,16 @@ internal sealed class AppearanceWindow : Form
             x += size * 1.65f;
             foreach (var color in new[] { Color.FromArgb(229, 175, 108), Color.FromArgb(115, 126, 206), Color.FromArgb(91, 175, 169) })
             {
-                using var icon = Rounded(new RectangleF(x, y, size, size), 2 * dpi);
+                var iconBounds = new RectangleF(x, y, size, size);
+                var hit = RectangleF.Inflate(iconBounds, size * .25f, (bar.Height - size) / 2);
+                if (_pointer is { } pointer && hit.Contains(pointer))
+                {
+                    var press = _pressed && _clickDepth > 0;
+                    var delta = size * (press ? -_clickDepth * .03f : _hoverLift * .035f) / 2;
+                    iconBounds.Inflate(delta, delta);
+                    iconBounds.Y += (press ? _clickDepth : -_hoverLift) * dpi * .5f;
+                }
+                using var icon = Rounded(iconBounds, 2 * dpi);
                 using var ink = new SolidBrush(color);
                 canvas.FillPath(ink, icon);
                 x += size * 1.54f;

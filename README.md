@@ -34,6 +34,8 @@ dotnet run --project Sources/SmartTaskbar.Tests/SmartTaskbar.Tests.csproj -c Rel
 
 Open **SmartTaskbar Appearance** to choose **Full width** or **Floating island**. Set the corner radius from 0 to 24 px and the glass transparency from 0 to 85%, then select **Apply**. The island groups Windows Start, app buttons and the system tray. Search follows your setting in **Windows Settings → Personalization → Taskbar**. **Restore Windows look** returns to the standard taskbar style.
 
+**Hover lift** raises and enlarges app icons while the pointer is over them. **Click depth** lowers and shrinks the icon while you hold the mouse button. Set either value to 0 to turn off that SmartTaskbar effect.
+
 The picker runs independently of Intelligent auto-hide. Styling uses a portable Windhawk instance and Windows 11 Taskbar Styler scoped to Windows Explorer. The selected layout resumes at sign-in. [Windhawk release](https://github.com/ramensoftware/windhawk/releases/tag/2.0.0-alpha.8) · [Taskbar Styler](https://windhawk.net/mods/windows-11-taskbar-styler)
 
 Publish the Appearance project for Windows x64 into the Appearance directory, then run **Sources/SmartTaskbar.Appearance/Prepare-Windhawk.ps1** with **-OutputDirectory ./Appearance**. Open **Appearance/SmartTaskbar.Appearance.exe**.

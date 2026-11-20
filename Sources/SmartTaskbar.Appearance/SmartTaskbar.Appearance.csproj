@@ -8,7 +8,7 @@
     <ApplicationIcon>../SmartTaskbar/Resources/Logo-Black.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.0.0-preview.1</Version>
+    <Version>1.0.0-preview.2</Version>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Profiles/*.json" />
