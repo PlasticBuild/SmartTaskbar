@@ -35,16 +35,15 @@ namespace SmartTaskbar
             };
         }
 
-        public TaskbarCoverage CoverageFrom(Rectangle window, bool maximized, bool hasCaption)
+        public TaskbarCoverage CoverageFrom(Rectangle window, bool maximized, bool activeOnDisplay)
         {
-            if (!ShownBounds.IntersectsWith(window))
-                return TaskbarCoverage.Clear;
-            if (window.Contains(Display) && (!maximized || !hasCaption))
+            if (window.Contains(Display))
                 return TaskbarCoverage.Fullscreen;
 
-            // Regular maximized windows expand when auto-hide frees the work area.
-            // Treating that expansion as an overlap would prevent the taskbars from returning.
-            return maximized ? TaskbarCoverage.Clear : TaskbarCoverage.Overlap;
+            if (maximized)
+                return activeOnDisplay ? TaskbarCoverage.Overlap : TaskbarCoverage.Clear;
+
+            return ShownBounds.IntersectsWith(window) ? TaskbarCoverage.Overlap : TaskbarCoverage.Clear;
         }
 
         public static Rectangle Dock(Rectangle actual, Rectangle display, TaskbarPosition edge)

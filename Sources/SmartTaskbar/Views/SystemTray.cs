@@ -73,6 +73,7 @@ namespace SmartTaskbar
             exit.Click += (_, _) => ExitThread();
             _engine.CloseRequested += (_, _) => ExitThread();
             _engine.ShowTaskbarsRequested += (_, _) => PauseAutoHide();
+            _engine.NativeAutoHideEnabled += (_, _) => ChangeMode(AutoModeType.None);
 
             _engine.SetMode(UserSettings.AutoModeType);
         }

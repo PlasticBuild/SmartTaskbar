@@ -34,6 +34,28 @@ namespace SmartTaskbar
         [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
         internal static extern int GetWindowStyle(IntPtr hwnd, int index);
 
+        [DllImport("user32.dll")]
+        internal static extern int GetSystemMetrics(int index);
+
+        [DllImport("user32.dll")]
+        internal static extern int GetWindowRgn(IntPtr hwnd, IntPtr region);
+
+        [DllImport("user32.dll")]
+        internal static extern int GetWindowRgnBox(IntPtr hwnd, out TagRect bounds);
+
+        [DllImport("user32.dll")]
+        internal static extern int SetWindowRgn(IntPtr hwnd, IntPtr region, [MarshalAs(UnmanagedType.Bool)] bool redraw);
+
+        [DllImport("gdi32.dll")]
+        internal static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+
+        [DllImport("gdi32.dll")]
+        internal static extern int CombineRgn(IntPtr destination, IntPtr first, IntPtr second, int mode);
+
+        [DllImport("gdi32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool DeleteObject(IntPtr handle);
+
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         internal static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string? title);

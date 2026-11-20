@@ -13,7 +13,7 @@ SmartTaskbar  <img src="https://github.com/ChanpleCai/SmartTaskbar/blob/main/log
 
 ## Windows desktop preview
 
-**Intelligent auto-hide** keeps the taskbars visible on the desktop and while windows leave their space clear. Fullscreen can cover a taskbar on its own display while the other taskbar stays accessible. An ordinary window that overlaps the taskbar triggers auto-hide, and the taskbars return when the space clears.
+**Intelligent auto-hide** keeps the taskbars visible on the desktop and animates the affected taskbar when a window overlaps it, is maximized on that display, or goes fullscreen. Move to the edge to reveal the taskbar temporarily. The Windows work area stays fixed so taskbar changes do not move the desktop layout. An ordinary maximized window still uses the reserved Windows work area. Fullscreen can use the entire display.
 
 **Always auto-hide** keeps the taskbars hidden until you pause the pointer near the edge. On stacked displays, pause just above the shared edge to reveal the upper taskbar. A quick crossing leaves SmartTaskbar's reveal inactive.
 
@@ -21,7 +21,7 @@ Intelligent auto-hide is the default for new settings. Use the tray menu to swit
 
 Press **Ctrl+Alt+Shift+T** or choose **Show both taskbars** in the tray menu to pause SmartTaskbar and restore the visible Windows taskbars. Turning off Windows auto-hide in Settings also pauses SmartTaskbar if it was using auto-hide. Use the tray menu to turn **Intelligent auto-hide** on again. The `SmartTaskbar.exe --show-taskbars` command is available for a desktop or Start menu shortcut.
 
-SmartTaskbar rediscovers the taskbars after Explorer restarts. When **Show taskbar on exit** is enabled, the app gives Explorer a short time to finish hiding an open bar before it restores the visible taskbars.
+In tablet posture, Explorer controls the taskbar and its touch gestures. SmartTaskbar resumes intelligent auto-hide when Windows reports laptop posture. The recovery process restores the original taskbar regions if SmartTaskbar closes unexpectedly. SmartTaskbar also rediscovers the taskbars when Explorer restarts.
 
 The x64 portable build requires the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). Extract the ZIP and run `SmartTaskbar.exe`. Use **Exit** in the tray menu to close it.
 

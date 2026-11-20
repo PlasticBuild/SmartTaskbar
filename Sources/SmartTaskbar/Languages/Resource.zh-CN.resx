@@ -121,7 +121,7 @@
     <value>关于</value>
   </data>
   <data name="tray_animation" xml:space="preserve">
-    <value>任务栏中的动画</value>
+    <value>Windows 菜单动画</value>
   </data>
   <data name="tray_auto" xml:space="preserve">
     <value>智能自动隐藏</value>

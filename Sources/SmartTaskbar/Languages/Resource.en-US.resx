@@ -121,7 +121,7 @@
     <value>About</value>
   </data>
   <data name="tray_animation" xml:space="preserve">
-    <value>Animations in the taskbar</value>
+    <value>Windows menu animations</value>
   </data>
   <data name="tray_auto" xml:space="preserve">
     <value>Intelligent auto-hide</value>

@@ -44,9 +44,12 @@ Expect(rightBar.RevealBand() == new Rectangle(2334, -1440, 26, 1440),
 var spanning = Rectangle.FromLTRB(350, -450, 1560, 1060);
 Expect(upperBar.CoverageFrom(spanning, false, false) == TaskbarCoverage.Overlap
     && lowerBar.CoverageFrom(spanning, false, false) == TaskbarCoverage.Overlap, "A spanning window covers both bars");
-Expect(upperBar.CoverageFrom(spanning, true, true) == TaskbarCoverage.Clear
-    && lowerBar.CoverageFrom(lower, true, true) == TaskbarCoverage.Clear,
-    "Work-area growth of an ordinary maximized window does not keep the taskbars hidden");
+var upperWorkArea = Rectangle.FromLTRB(upper.Left, upper.Top, upper.Right, upperBar.ShownBounds.Top);
+Expect(upperBar.CoverageFrom(upperWorkArea, true, true) == TaskbarCoverage.Overlap
+    && lowerBar.CoverageFrom(upperWorkArea, true, false) == TaskbarCoverage.Clear,
+    "Maximizing hides only that display's taskbar even if the window stops above it");
+Expect(upperBar.CoverageFrom(upperWorkArea, true, false) == TaskbarCoverage.Clear,
+    "An inactive maximized window that leaves the taskbar's space clear does not keep it hidden");
 Expect(upperBar.CoverageFrom(Rectangle.FromLTRB(0, -250, 800, -151), false, false) == TaskbarCoverage.Clear,
     "Touching the taskbar boundary leaves the bar clear");
 Expect(upperBar.CoverageFrom(upper, false, false) == TaskbarCoverage.Fullscreen
@@ -55,16 +58,19 @@ Expect(upperBar.CoverageFrom(upper, false, false) == TaskbarCoverage.Fullscreen
 Expect(lowerBar.CoverageFrom(lower, true, false) == TaskbarCoverage.Fullscreen,
     "A borderless maximized window that fills the actual display still counts as fullscreen");
 
-var transition = new AutoHideTransition();
-Expect(!transition.IsReady(false, true, 1000) && !transition.IsReady(false, true, 1124),
-    "A short overlap does not start an auto-hide animation");
-Expect(transition.IsReady(false, true, 1125), "A stable overlap can hide the taskbar");
-Expect(transition.IsReady(false, false, 1130) && !transition.IsReady(false, true, 1135),
-    "Clearing the overlap resets the transition timer");
-Expect(!transition.IsReady(true, false, 1300) && transition.IsReady(true, false, 1500),
-    "A clear desktop stays clear briefly before the taskbars repin");
-Expect(!transition.IsReady(false, true, 2000, 400) && !transition.IsReady(false, true, 2399, 400)
-    && transition.IsReady(false, true, 2400, 400), "Fullscreen gets time to settle before requesting Explorer auto-hide");
+var animation = new TaskbarRetraction();
+animation.SetVisible(false, 1000);
+Expect(animation.FractionAt(1000) == 1 && animation.FractionAt(1120) == 0.5
+    && animation.FractionAt(1240) == 0, "Retraction has finite duration and intermediate frames");
+animation.SetVisible(true, 1120);
+Expect(animation.FractionAt(1120) == 0.5 && animation.FractionAt(1240) == 0.75
+    && animation.FractionAt(1360) == 1, "Reversing resumes smoothly from the current position");
+Expect(TaskbarRetraction.ClipBounds(new Size(200, 60), TaskbarPosition.Bottom, 17)
+    == new Rectangle(0, 43, 200, 17), "A bottom tray animates toward the bottom edge");
+Expect(TaskbarRetraction.ClipBounds(new Size(60, 200), TaskbarPosition.Right, 17)
+    == new Rectangle(43, 0, 17, 200), "A right tray animates toward the right edge");
+Expect(TaskbarRetraction.ClipBounds(new Size(200, 60), TaskbarPosition.Top, 0).IsEmpty,
+    "A hidden tray has no input region");
 
 var dwell = new EdgeDwell();
 Expect(!dwell.IsReady(upperBar.Handle, 1000) && !dwell.IsReady(upperBar.Handle, 1179),
@@ -81,7 +87,7 @@ Expect(dwell.TryRequestReveal(2180) && !dwell.TryRequestReveal(3000),
 Expect(!dwell.IsReady(upperBar.Handle, 3010) && dwell.TryRequestReveal(3190),
     "A new taskbar gets its own reveal attempts");
 
-Console.WriteLine("29 taskbar geometry and transition checks passed.");
+Console.WriteLine("30 taskbar geometry and animation checks passed.");
 
 static void Expect(bool condition, string message)
 {

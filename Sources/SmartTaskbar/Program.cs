@@ -8,6 +8,12 @@ namespace SmartTaskbar
         [STAThread]
         private static void Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == TaskbarRecovery.WorkerArgument)
+            {
+                TaskbarRecovery.RunWorker(args);
+                return;
+            }
+
             // Use a mutex to ensure single instance
             using (new Mutex(true, "{959d3545-aa5c-42a8-a327-6e2c079daa94}", out var createNew))
             {
