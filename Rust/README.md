@@ -6,7 +6,7 @@ Run `SmartTaskbar-Setup.exe` on 64-bit Intel or AMD Windows 11. Setup installs f
 
 Open `smarttaskbar-rs.exe` for settings. The preview lets you try the island, full-width bar, pointer effects, fullscreen reveal and menu transition. Select **Apply** to save. Preferences are stored beside the executable in `settings.json`, or in the file selected with `--config`. Turning on sign-in registers that executable for the current Windows user.
 
-The C# and Rust controllers share Explorer. The Rust engine checks for a running C# controller before it takes control. **Ctrl+Alt+Shift+T** restores the taskbar and exits the Rust engine. `smarttaskbar-rs.exe --stop` also requests a graceful exit.
+**Ctrl+Alt+Shift+T** restores the taskbar and exits the controller. `smarttaskbar-rs.exe --stop` also requests a graceful exit.
 
 Use **Reveal settings for display** to edit defaults or choose a connected monitor and enable **Use custom reveal settings**. Each monitor can use its own activation zone and delays for outside edges and shared edges. The shared edge still requires an approach from inside that display.
 
@@ -36,7 +36,7 @@ From the Rust folder, run `./Build.ps1 test` and `./Stage.ps1 -StyleRoot <portab
 
 Build the per-user installer with `./Installer.ps1 -StyleRoot <prepared-portable-Windhawk-folder> -Compiler <path-to-makensis.exe>`. It outputs `bin/installer/SmartTaskbar-Setup.exe`. The package includes the four versioned Windhawk modules with their source and notices. It configures shell paths on the destination PC during installation.
 
-Use a dedicated portable Windhawk host prepared for this project with taskbar styler 1.11.2, Start menu styler 1.8, notification center styler 1.8 and shell flyout positions 1.3.1. The Rust engine reads and restores the prior native profiles. A `Windhawk` folder beside the executable or an explicit `SMARTTASKBAR_STYLE_ROOT` can also select the host. Without a style host the engine controls native taskbar visibility and Windows supplies its appearance.
+Run `./Prepare-Windhawk.ps1 -OutputDirectory ../bin/portable-style` to prepare the pinned portable host and four styling modules for an installer build. The host ends up in `../bin/portable-style/Windhawk`. Close any running Windhawk instance before preparing a fresh host. The Rust engine reads and restores the prior native profiles. A `Windhawk` folder beside the executable or an explicit `SMARTTASKBAR_STYLE_ROOT` can also select the host. Without a style host the engine controls native taskbar visibility and Windows supplies its appearance.
 
 Search redirection is off by default. When enabled, the standalone helper and its settings are stored under `optional/search` next to the configuration file. See [third-party notices](NOTICES.md).
 

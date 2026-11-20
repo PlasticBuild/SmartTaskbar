@@ -18,10 +18,9 @@ pub const IDS: [&str; 4] = [
 
 type Profile = BTreeMap<String, String>;
 type Geometry = Option<(i32, i32, i32)>;
-const ISLAND: &str = include_str!("../../Sources/SmartTaskbar.Appearance/Profiles/Island.json");
-const VERTICAL: &str =
-    include_str!("../../Sources/SmartTaskbar.Appearance/Profiles/IslandVertical.json");
-const FULL: &str = include_str!("../../Sources/SmartTaskbar.Appearance/Profiles/FullWidth.json");
+const ISLAND: &str = include_str!("../assets/taskbar/Island.json");
+const VERTICAL: &str = include_str!("../assets/taskbar/IslandVertical.json");
+const FULL: &str = include_str!("../assets/taskbar/FullWidth.json");
 const START: &str =
     "StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu";
 const SEARCH: &str = "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid";

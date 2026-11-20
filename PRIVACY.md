@@ -1,5 +1,5 @@
-# SmartTaskbar Privacy Statement
-The SmartTaskbar don't collect any data about our users. This app does not use telemetry, all settings are saved offline locally.
+# Privacy
 
-### This App can access following user data:
-* Registry (In order to monitor and set the taskbar settings.)
+SmartTaskbar stores preferences on your PC and has no telemetry. It reads Windows taskbar, display, and window information to control when the taskbar shows. If you enable the media player, it reads the current media session from Windows.
+
+Opening Settings checks GitHub for the latest release. The optional search redirect downloads its helper when enabled.

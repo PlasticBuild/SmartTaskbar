@@ -1,12 +1,9 @@
-param([Parameter(Mandatory)][string]$OutputDirectory, [switch]$CreateShortcuts)
+param([Parameter(Mandatory)][string]$OutputDirectory)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$null = New-Item -ItemType Directory -Path $OutputDirectory -Force
 $output = (Resolve-Path -LiteralPath $OutputDirectory).Path
-$picker = Join-Path $output 'SmartTaskbar.Appearance.exe'
-if ($CreateShortcuts -and !(Test-Path -LiteralPath $picker -PathType Leaf)) {
-    throw 'Publish SmartTaskbar Appearance into the output directory before creating its shortcuts.'
-}
 $portable = Join-Path $output 'Windhawk'
 if (Test-Path -LiteralPath $portable) {
     throw "A Windhawk directory already exists in $output."
@@ -72,15 +69,4 @@ finally {
     }
 }
 
-if ($CreateShortcuts) {
-    $shell = New-Object -ComObject WScript.Shell
-    foreach ($folder in @('DesktopDirectory', 'Programs')) {
-        $link = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath($folder)) 'SmartTaskbar Appearance.lnk'))
-        $link.TargetPath = $picker
-        $link.WorkingDirectory = $output
-        $link.Arguments = ''
-        $link.IconLocation = "$picker,0"
-        $link.Description = 'Customize the Windows taskbar'
-        $link.Save()
-    }
-}
+"Prepared $portable"
