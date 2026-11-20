@@ -58,6 +58,7 @@ namespace SmartTaskbar
         private TaskbarInfo? _edgeReveal;
         private bool _edgeConfirmed;
         private IntPtr _visualPeek;
+        private long _visualPeekUntil;
         private IntPtr _foundFlyout;
         private IntPtr _flyout;
         private IntPtr _flyoutBar;
@@ -356,6 +357,13 @@ namespace SmartTaskbar
                     }
                 }
             }
+            // Thumbnail previews are non-activating and can be under the pointer before enumeration sees them.
+            if (GetCursorPos(out var hoverPoint))
+            {
+                var hovered = WindowAt(new Point(hoverPoint.x, hoverPoint.y));
+                if (TaskbarHelper.IsTaskbarThumbnail(hovered, _shellProcess))
+                    _foundFlyout = hovered;
+            }
             var flyoutBar = UpdateFlyout();
             var shellInUse = flyoutBar != IntPtr.Zero || MenuOpen ||
                 TaskbarHelper.IsTraySurface(foreground.GetClassName()) && !foreground.IsWindowInvisible();
@@ -373,8 +381,7 @@ namespace SmartTaskbar
             if (GetCursorPos(out var point))
             {
                 var mouse = new Point(point.x, point.y);
-                if (_visualPeek != IntPtr.Zero &&
-                    !_bars.Exists(bar => bar.Handle == _visualPeek && bar.ShownBounds.Contains(mouse)))
+                if (_visualPeek != IntPtr.Zero && !KeepVisualPeek(mouse, now))
                 {
                     _visualPeek = IntPtr.Zero;
                     reveal = flyoutBar;
@@ -403,6 +410,7 @@ namespace SmartTaskbar
                             && WindowAt(mouse) == bar.Handle)
                         {
                             reveal = _visualPeek = bar.Handle;
+                            _visualPeekUntil = now + ThumbnailTransitMs;
                             break;
                         }
                     }
@@ -506,7 +514,7 @@ namespace SmartTaskbar
             var cursor = new Point(point.x, point.y);
             if (_visualPeek != IntPtr.Zero)
             {
-                if (_bars.Exists(bar => bar.Handle == _visualPeek && bar.ShownBounds.Contains(cursor)))
+                if (KeepVisualPeek(cursor, Environment.TickCount64))
                     return;
 
                 _visualPeek = IntPtr.Zero;
@@ -525,12 +533,25 @@ namespace SmartTaskbar
                 if (_dwell.IsReady(bar.Handle, Environment.TickCount64))
                 {
                     _visualPeek = bar.Handle;
+                    _visualPeekUntil = Environment.TickCount64 + ThumbnailTransitMs;
                     QueueUpdate();
                 }
                 return;
             }
 
             _dwell = default;
+        }
+
+        private const int ThumbnailTransitMs = 350;
+
+        private bool KeepVisualPeek(Point cursor, long now)
+        {
+            var bar = _bars.Find(bar => bar.Handle == _visualPeek);
+            if (bar.Handle == IntPtr.Zero)
+                return false;
+            if (bar.ShownBounds.Contains(cursor))
+                _visualPeekUntil = now + ThumbnailTransitMs;
+            return bar.Display.Contains(cursor) && now <= _visualPeekUntil;
         }
 
         private static IntPtr WindowAt(Point point)

@@ -240,6 +240,37 @@ pub(super) fn cursor() -> Option<Point> {
     (unsafe { GetCursorPos(&mut p) } != 0).then_some(Point { x: p.x, y: p.y })
 }
 
+fn thumbnail_class(class: &str) -> bool {
+    matches!(class, "TaskListThumbnailWnd" | "TaskListOverlayWnd")
+}
+
+fn thumbnail_display(hwnd: HWND, owner: HWND, shell: u32) -> Option<Display> {
+    if is_bar(owner, shell) {
+        display_for(owner)
+    } else {
+        display_for(hwnd)
+    }
+}
+
+pub(super) fn hovered_thumbnail(point: Point, shell: u32) -> Option<Rect> {
+    if shell == 0 {
+        return None;
+    }
+    let hwnd = unsafe {
+        GetAncestor(
+            WindowFromPhysicalPoint(POINT {
+                x: point.x,
+                y: point.y,
+            }),
+            GA_ROOT,
+        )
+    };
+    if hwnd.is_null() || window_pid(hwnd) != shell || !thumbnail_class(&window_class(hwnd)) {
+        return None;
+    }
+    thumbnail_display(hwnd, unsafe { GetWindow(hwnd, GW_OWNER) }, shell).map(|d| d.bounds)
+}
+
 fn shell_surface(name: &str, class: &str, has_owner: bool) -> bool {
     match name {
         "startmenuexperiencehost.exe" | "searchhost.exe" | "searchapp.exe" => matches!(
@@ -260,17 +291,18 @@ fn shell_surface(name: &str, class: &str, has_owner: bool) -> bool {
                 | "XamlExplorerHostIslandWindow"
         ),
         "explorer.exe" => {
-            matches!(
-                class,
-                "NotifyIconOverflowWindow"
-                    | "TopLevelWindowForOverflowXamlIsland"
-                    | "TaskListThumbnailWnd"
-                    | "DV2ControlHost"
-                    | "JumpListHost"
-                    | "ControlCenterWindow"
-                    | "NotificationCenterWindow"
-                    | "ClockFlyoutWindow"
-            ) || (class == "#32768" && has_owner)
+            thumbnail_class(class)
+                || matches!(
+                    class,
+                    "NotifyIconOverflowWindow"
+                        | "TopLevelWindowForOverflowXamlIsland"
+                        | "DV2ControlHost"
+                        | "JumpListHost"
+                        | "ControlCenterWindow"
+                        | "NotificationCenterWindow"
+                        | "ClockFlyoutWindow"
+                )
+                || (class == "#32768" && has_owner)
         }
         _ => false,
     }
@@ -398,7 +430,12 @@ pub(super) fn scene(names: &mut ProcessNames) -> Scene {
         if shell_surface(name, &class, tray_owned)
             || (tray_owned && matches!(class.as_str(), "#32768" | "Xaml_WindowedPopupClass"))
         {
-            if let Some(home) = display_for(h) {
+            let home = if thumbnail_class(&class) {
+                thumbnail_display(h, owner, shell)
+            } else {
+                display_for(h)
+            };
+            if let Some(home) = home {
                 out.menus.push(home.bounds);
                 if let Some(kind) = panel_kind(
                     name,

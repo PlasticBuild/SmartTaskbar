@@ -168,6 +168,10 @@ namespace SmartTaskbar
             "TopLevelWindowForOverflowXamlIsland" or "NotifyIconOverflowWindow" or "TaskListThumbnailWnd"
             or "TaskListOverlayWnd" or "ControlCenterWindow" or "NotificationCenterWindow";
 
+        public static bool IsTaskbarThumbnail(IntPtr window, int shellProcess)
+            => shellProcess != 0 && window.GetClassName() is ("TaskListThumbnailWnd" or "TaskListOverlayWnd")
+                && GetWindowThreadProcessId(window, out var process) != 0 && process == shellProcess;
+
         public static bool IsVisibleFlyout(IntPtr window, string windowClass, int shellProcess)
         {
             if (IsFlyoutClass(windowClass))

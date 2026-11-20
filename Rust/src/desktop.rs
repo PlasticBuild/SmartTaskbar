@@ -335,11 +335,13 @@ struct Model {
     displays: Vec<Rect>,
     scene: Scene,
     names: native::ProcessNames,
+    shell: u32,
     media: Option<Worker>,
 }
 impl Model {
     fn sync(&mut self, guard: &mut rescue::Monitor) -> Result<(), String> {
         self.displays = native::displays();
+        self.shell = native::shell_pid();
         let bars = if native::tablet() || native::explorer_auto_hide() {
             Vec::new()
         } else {
@@ -375,6 +377,7 @@ impl Model {
     }
     fn update(&mut self, settings: &Settings, now: u64) -> Result<u32, String> {
         let cursor = native::cursor();
+        let thumbnail = cursor.and_then(|p| native::hovered_thumbnail(p, self.shell));
         let mut delay = 1200;
         if settings.media_player && !self.managed.is_empty() {
             if self.media.is_none() {
@@ -398,7 +401,9 @@ impl Model {
                 .iter()
                 .find(|p| p.monitor == bar.display)
                 .copied();
-            let shell_menu = panel.is_some() || self.scene.menus.contains(&bar.display);
+            let shell_menu = panel.is_some()
+                || self.scene.menus.contains(&bar.display)
+                || thumbnail == Some(bar.display);
             let under_cursor = cursor.is_some_and(|p| face.unwrap_or(bar.bounds).contains(p));
             if (m.depth > 0 && under_cursor) || shell_menu || m.menu.is_some() {
                 m.last_face = Some(now);
