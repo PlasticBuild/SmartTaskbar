@@ -6,6 +6,8 @@ Open `smarttaskbar-rs.exe` for settings. The preview lets you try the island, fu
 
 The C# and Rust controllers share Explorer. The Rust engine checks for a running C# controller before it takes control. **Ctrl+Alt+Shift+T** restores the taskbar and exits the Rust engine. `smarttaskbar-rs.exe --stop` also requests a graceful exit.
 
+**App icon size** scales pinned and running app icons from 70% to 125% in both taskbar layouts. It updates the preview as you drag. Select **Apply** to use the new size.
+
 Turn on **Show taskbar media player**, choose **Media player side**, and select **Apply**. The player appears when an app starts reporting playback to Windows. It shows available artwork, play or pause, previous and next controls, and a scrubber. Seeking and track navigation depend on the app. The player attaches just inside the chosen end when the bar has no free space alongside it. On a vertical taskbar, Left chooses the upper end and Right chooses the lower end.
 
 ## Commands

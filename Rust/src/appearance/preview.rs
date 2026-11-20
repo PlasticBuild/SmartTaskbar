@@ -520,17 +520,16 @@ pub(super) unsafe fn paint(hwnd: HWND, s: &State) {
                 palette.text,
             );
         }
-        let settings_y = p.settings.y + 9;
-        let sx = p.settings.x + 15;
-        let sw = p.settings.w - 30;
-        for (y, value) in [
-            (128, format!("{} px", s.draft.radius)),
-            (174, format!("{}%", s.draft.transparency)),
-            (220, format!("{} px", s.draft.hover_lift)),
-            (266, format!("{} px", s.draft.click_depth)),
+        for (id, value) in [
+            (RADIUS, format!("{} px", s.draft.radius)),
+            (TRANSPARENCY, format!("{}%", s.draft.transparency)),
+            (ICON_SIZE, format!("{}%", s.draft.icon_size)),
+            (HOVER, format!("{} px", s.draft.hover_lift)),
+            (PRESS, format!("{} px", s.draft.click_depth)),
         ] {
+            let control = p.control(id);
             c.text(
-                Box2::at(sx + sw - 48, settings_y + y, 48, 18),
+                Box2::at(control.x + control.w - 48, control.y - 19, 48, 18),
                 &value,
                 s.paint.normal,
                 palette.muted,
@@ -653,7 +652,7 @@ unsafe fn draw_scene(c: &Canvas, s: &State) {
                 p.line,
             );
             for (index, b) in g.icons.iter().enumerate() {
-                let hover = s.demo.hot == Some(index);
+                let hover = s.draft.animate && s.demo.hot == Some(index);
                 let movement = if !hover {
                     0
                 } else if s.demo.down {
@@ -661,12 +660,16 @@ unsafe fn draw_scene(c: &Canvas, s: &State) {
                 } else {
                     -(s.draft.hover_lift as i32)
                 };
-                let span = (b.w * 2 / 3).max(9)
-                    + if hover && !s.demo.down {
-                        (s.draft.hover_lift as i32 + 1) / 2
-                    } else {
-                        0
-                    };
+                let base = (b.w * 2 / 3).max(9);
+                let span = if index == 0 {
+                    base
+                } else {
+                    (base * i32::from(s.draft.icon_size) + 50) / 100
+                } + if hover && !s.demo.down {
+                    (s.draft.hover_lift as i32 + 1) / 2
+                } else {
+                    0
+                };
                 let icon = Box2::at(
                     b.x + (b.w - span) / 2,
                     b.y + (b.h - span) / 2 + movement,

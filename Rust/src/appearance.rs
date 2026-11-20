@@ -41,6 +41,7 @@ const APPLY: u16 = 114;
 const ENGINE: u16 = 115;
 const MEDIA: u16 = 116;
 const MEDIA_SIDE: u16 = 117;
+const ICON_SIZE: u16 = 118;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
 const LABEL: u16 = 1000;
@@ -49,6 +50,7 @@ const LABELS: &[(u16, &str)] = &[
     (ALIGN, "Island &position"),
     (RADIUS, "Corner &radius"),
     (TRANSPARENCY, "&Transparency"),
+    (ICON_SIZE, "App icon si&ze"),
     (HOVER, "&Hover lift"),
     (PRESS, "Click &depth"),
     (ZONE, "Activation &zone"),
@@ -93,13 +95,13 @@ impl Page {
             let left = usable - right - 20;
             (
                 Box2::at(inset, 65, left, (height - 145).clamp(360, 610)),
-                Box2::at(inset + left + 20, 65, right, 586),
+                Box2::at(inset + left + 20, 65, right, 632),
             )
         } else {
             let h = (usable * 53 / 100).clamp(215, 340);
             (
                 Box2::at(inset, 65, usable, h),
-                Box2::at(inset, 65 + h + 14, usable, 586),
+                Box2::at(inset, 65 + h + 14, usable, 632),
             )
         };
         Self {
@@ -119,15 +121,16 @@ impl Page {
             ALIGN => (94, 25),
             RADIUS => (146, 25),
             TRANSPARENCY => (192, 25),
-            HOVER => (238, 25),
-            PRESS => (284, 25),
-            ZONE => (334, 25),
-            MOTION => (367, 23),
-            SIGN_IN => (393, 23),
-            SEARCH => (419, 23),
-            PROVIDER => (466, 25),
-            MEDIA => (502, 23),
-            MEDIA_SIDE => (548, 25),
+            ICON_SIZE => (238, 25),
+            HOVER => (284, 25),
+            PRESS => (330, 25),
+            ZONE => (380, 25),
+            MOTION => (413, 23),
+            SIGN_IN => (439, 23),
+            SEARCH => (465, 23),
+            PROVIDER => (512, 25),
+            MEDIA => (548, 23),
+            MEDIA_SIDE => (594, 25),
             FULLSCREEN => {
                 return Box2::at(
                     self.preview.x + 13,
@@ -304,7 +307,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             let current = GetFocus();
             if msg.message == WM_KEYDOWN && current != prior && IsChild(hwnd, current) != 0 {
                 let id = GetDlgCtrlID(current) as u16;
-                if (LAYOUT..=MEDIA_SIDE).contains(&id) {
+                if (LAYOUT..=ICON_SIZE).contains(&id) {
                     let b = state.page.control(id);
                     let mut visible = RECT::default();
                     GetClientRect(hwnd, &mut visible);
@@ -508,7 +511,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 unsafe fn create_controls(hwnd: HWND, state: *mut State) {
     unsafe {
         let mut failed = false;
-        for id in LAYOUT..=MEDIA_SIDE {
+        for id in (LAYOUT..=TRANSPARENCY)
+            .chain([ICON_SIZE])
+            .chain(HOVER..=MEDIA_SIDE)
+        {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
                     0,
@@ -538,12 +544,13 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                     },
                     (CBS_DROPDOWNLIST | CBS_HASSTRINGS) as u32 | WS_VSCROLL,
                 ),
-                RADIUS..=PRESS => (
+                RADIUS..=PRESS | ICON_SIZE => (
                     "msctls_trackbar32",
                     match id {
                         RADIUS => "Corner radius",
                         TRANSPARENCY => "Transparency",
                         HOVER => "Hover lift",
+                        ICON_SIZE => "App icon size",
                         _ => "Click depth",
                     },
                     TBS_NOTICKS,
@@ -644,9 +651,21 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 .position(|v| *v == s.draft.web_engine)
                 .unwrap_or_default(),
         );
+        SendDlgItemMessageW(
+            hwnd,
+            ICON_SIZE as i32,
+            TBM_SETRANGEMIN,
+            0,
+            Settings::MIN_ICON_SIZE as isize,
+        );
         for (id, max, value) in [
             (RADIUS, 24, s.draft.radius),
             (TRANSPARENCY, 85, s.draft.transparency),
+            (
+                ICON_SIZE,
+                Settings::MAX_ICON_SIZE as isize,
+                s.draft.icon_size,
+            ),
             (HOVER, 8, s.draft.hover_lift),
             (PRESS, 5, s.draft.click_depth),
         ] {
@@ -656,7 +675,11 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 id as i32,
                 TBM_SETPAGESIZE,
                 0,
-                if id == TRANSPARENCY { 5 } else { 1 },
+                if matches!(id, TRANSPARENCY | ICON_SIZE) {
+                    5
+                } else {
+                    1
+                },
             );
             SendDlgItemMessageW(hwnd, id as i32, TBM_SETPOS, 1, value as isize);
         }
@@ -694,7 +717,7 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=MEDIA_SIDE {
+        for id in LAYOUT..=ICON_SIZE {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
@@ -728,7 +751,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             nTrackPos: 0,
         };
         SetScrollInfo(hwnd, SB_VERT, &info, 1);
-        for id in LAYOUT..=MEDIA_SIDE {
+        for id in LAYOUT..=ICON_SIZE {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
             if !label.is_null() {
@@ -790,6 +813,7 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
         };
         s.draft.radius = slider(RADIUS as i32);
         s.draft.transparency = slider(TRANSPARENCY as i32);
+        s.draft.icon_size = slider(ICON_SIZE as i32);
         s.draft.hover_lift = slider(HOVER as i32);
         s.draft.click_depth = slider(PRESS as i32);
         s.draft.animate = check(MOTION as i32);

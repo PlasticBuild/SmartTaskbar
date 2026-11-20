@@ -33,6 +33,7 @@ pub struct Settings {
     pub island: bool,
     pub radius: u8,
     pub transparency: u8,
+    pub icon_size: u8,
     pub hover_lift: u8,
     pub click_depth: u8,
     pub animate: bool,
@@ -51,6 +52,7 @@ impl Default for Settings {
             island: true,
             radius: 4,
             transparency: 65,
+            icon_size: 100,
             hover_lift: 2,
             click_depth: 1,
             animate: true,
@@ -76,8 +78,15 @@ pub const PROVIDERS: &[&str] = &[
 ];
 
 impl Settings {
+    pub const MIN_ICON_SIZE: u8 = 70;
+    pub const MAX_ICON_SIZE: u8 = 125;
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.radius > 24 || self.transparency > 85 || self.hover_lift > 8 || self.click_depth > 5
+        if self.radius > 24
+            || self.transparency > 85
+            || self.hover_lift > 8
+            || self.click_depth > 5
+            || !(Self::MIN_ICON_SIZE..=Self::MAX_ICON_SIZE).contains(&self.icon_size)
         {
             return Err("The appearance values are outside the supported range.".into());
         }
@@ -184,6 +193,7 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"radius":8}"#).unwrap();
         assert!(!s.search_redirect && !s.start_at_sign_in && !s.media_player);
         assert_eq!(s.media_side, MediaSide::Right);
+        assert_eq!(s.icon_size, 100);
         assert_eq!(s.radius, 8);
     }
     #[test]

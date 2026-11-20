@@ -160,34 +160,44 @@ fn taskbar(s: &Settings, joined: bool) -> Result<Profile, String> {
         profile.insert("clickThroughTaskbar".into(), "1".into());
         rotation_guard(&mut profile);
     }
-    if s.animate && (s.hover_lift != 0 || s.click_depth != 0) {
-        let hover = 1.0 + 0.035 * f64::from(s.hover_lift);
-        let pressed = if s.click_depth == 0 {
-            hover
-        } else {
-            1.0 - 0.03 * f64::from(s.click_depth)
-        };
+    let animate_icons = s.animate && (s.hover_lift != 0 || s.click_depth != 0);
+    if s.icon_size != 100 || animate_icons {
+        let base = f64::from(s.icon_size) / 100.0;
         let mut motion = vec!["RenderTransformOrigin=0.5,0.5".into()];
-        for group in [
-            "Inactive",
-            "Active",
-            "MultiWindow",
-            "RequestingAttention",
-            "RequestingAttentionMulti",
-        ] {
-            for (state, scale, y) in [
-                ("PointerOver", hover, -i16::from(s.hover_lift)),
-                (
-                    "Pressed",
-                    pressed,
-                    if s.click_depth == 0 {
-                        -i16::from(s.hover_lift)
-                    } else {
-                        i16::from(s.click_depth)
-                    },
-                ),
+        if s.icon_size != 100 {
+            motion.push(format!(
+                "RenderTransform:=<CompositeTransform ScaleX=\"{base:.3}\" ScaleY=\"{base:.3}\" />"
+            ));
+        }
+        if animate_icons {
+            let hover = 1.0 + 0.035 * f64::from(s.hover_lift);
+            let pressed = if s.click_depth == 0 {
+                hover
+            } else {
+                1.0 - 0.03 * f64::from(s.click_depth)
+            };
+            for group in [
+                "Inactive",
+                "Active",
+                "MultiWindow",
+                "RequestingAttention",
+                "RequestingAttentionMulti",
             ] {
-                motion.push(format!("RenderTransform@{group}{state}:=<CompositeTransform ScaleX=\"{scale:.3}\" ScaleY=\"{scale:.3}\" TranslateY=\"{y}\" />"));
+                for (state, scale, y) in [
+                    ("PointerOver", hover, -i16::from(s.hover_lift)),
+                    (
+                        "Pressed",
+                        pressed,
+                        if s.click_depth == 0 {
+                            -i16::from(s.hover_lift)
+                        } else {
+                            i16::from(s.click_depth)
+                        },
+                    ),
+                ] {
+                    let scale = scale * base;
+                    motion.push(format!("RenderTransform@{group}{state}:=<CompositeTransform ScaleX=\"{scale:.3}\" ScaleY=\"{scale:.3}\" TranslateY=\"{y}\" />"));
+                }
             }
         }
         rule(
@@ -396,6 +406,40 @@ mod tests {
                     .map(|v| v.as_str().unwrap().to_owned())
             })
             .collect()
+    }
+
+    #[test]
+    fn app_icon_size_applies_in_both_layouts_and_with_motion_disabled() {
+        for island in [false, true] {
+            let settings = Settings {
+                island,
+                icon_size: 80,
+                hover_lift: 5,
+                animate: false,
+                ..Settings::default()
+            };
+            let reduced = taskbar(&settings, false).unwrap();
+            assert!(
+                reduced
+                    .values()
+                    .any(|v| v.starts_with("RenderTransform:=") && v.contains("ScaleX=\"0.800\""))
+            );
+            assert!(!reduced.values().any(|v| v.starts_with("RenderTransform@")));
+            let motion = taskbar(
+                &Settings {
+                    animate: true,
+                    ..settings
+                },
+                false,
+            )
+            .unwrap();
+            assert!(
+                motion
+                    .values()
+                    .any(|v| v.starts_with("RenderTransform@ActivePointerOver")
+                        && v.contains("ScaleX=\"0.940\""))
+            );
+        }
     }
 
     #[test]
