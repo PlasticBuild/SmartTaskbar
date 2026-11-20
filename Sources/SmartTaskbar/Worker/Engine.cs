@@ -316,6 +316,7 @@ namespace SmartTaskbar
             _cursorSampler.Enabled = covered && !shellInUse;
 
             var reveal = _visualPeek;
+            var obscuredPeek = IntPtr.Zero;
             if (GetCursorPos(out var point))
             {
                 var mouse = new Point(point.x, point.y);
@@ -348,9 +349,15 @@ namespace SmartTaskbar
                         }
                     }
                 }
+                else if (_visualPeek != IntPtr.Zero)
+                {
+                    var hit = WindowAt(mouse);
+                    if (hit != _visualPeek && !TaskbarHelper.IsTraySurface(hit.GetClassName()))
+                        obscuredPeek = _visualPeek;
+                }
             }
 
-            if (_visuals.Apply(_coverage, reveal, now))
+            if (_visuals.Apply(_coverage, reveal, obscuredPeek, now))
                 QueueUpdate();
         }
 

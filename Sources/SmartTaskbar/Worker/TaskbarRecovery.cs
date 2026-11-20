@@ -15,18 +15,24 @@ namespace SmartTaskbar
         private readonly EventWaitHandle _ready;
         private readonly EventWaitHandle _cancel;
         private readonly EventWaitHandle _restore;
+        private readonly Dictionary<IntPtr, EventWaitHandle> _peekPromotions;
         private readonly long _deadline = Environment.TickCount64 + 3_000;
 
-        private TaskbarRecovery(Process worker, EventWaitHandle ready, EventWaitHandle cancel, EventWaitHandle restore)
+        private TaskbarRecovery(Process worker, EventWaitHandle ready, EventWaitHandle cancel, EventWaitHandle restore,
+            Dictionary<IntPtr, EventWaitHandle> peekPromotions)
         {
             _worker = worker;
             _ready = ready;
             _cancel = cancel;
             _restore = restore;
+            _peekPromotions = peekPromotions;
         }
 
         public bool IsReady => !_worker.HasExited && _ready.WaitOne(0);
         public bool IsStarting => !_worker.HasExited && Environment.TickCount64 < _deadline;
+        public EventWaitHandle PeekPromotion(IntPtr window) => _peekPromotions[window];
+
+        private static string PeekEventName(string name, string window) => name + ".Peek." + window;
 
         public static TaskbarRecovery? Start(IEnumerable<TaskbarInfo> bars)
         {
@@ -46,13 +52,19 @@ namespace SmartTaskbar
             info.ArgumentList.Add(parent.Id.ToString(CultureInfo.InvariantCulture));
             info.ArgumentList.Add(parent.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture));
             info.ArgumentList.Add(name);
+            var peekPromotions = new Dictionary<IntPtr, EventWaitHandle>();
             foreach (var bar in bars)
-                info.ArgumentList.Add(bar.Handle.ToInt64().ToString(CultureInfo.InvariantCulture));
+            {
+                var window = bar.Handle.ToInt64().ToString(CultureInfo.InvariantCulture);
+                info.ArgumentList.Add(window);
+                peekPromotions.Add(bar.Handle, new EventWaitHandle(false, EventResetMode.ManualReset,
+                    PeekEventName(name, window)));
+            }
 
             try
             {
                 if (Process.Start(info) is { } worker)
-                    return new TaskbarRecovery(worker, ready, cancel, restore);
+                    return new TaskbarRecovery(worker, ready, cancel, restore, peekPromotions);
             }
             catch (Win32Exception)
             {
@@ -62,6 +74,8 @@ namespace SmartTaskbar
             ready.Dispose();
             cancel.Dispose();
             restore.Dispose();
+            foreach (var promotion in peekPromotions.Values)
+                promotion.Dispose();
             return null;
         }
 
@@ -73,7 +87,7 @@ namespace SmartTaskbar
                 !Guid.TryParseExact(args[3][EventPrefix.Length..], "N", out _))
                 return;
 
-            var saved = new List<ExplorerTaskbarRegion>();
+            var saved = new List<(ExplorerTaskbarRegion Region, EventWaitHandle Promotion)>();
             var workspaces = new List<TaskbarWorkspace>();
             try
             {
@@ -98,13 +112,19 @@ namespace SmartTaskbar
 
                 for (var index = 4; index < args.Length; index++)
                 {
-                    if (!long.TryParse(args[index], CultureInfo.InvariantCulture, out var handle)
-                        || ExplorerTaskbarRegion.Capture(new IntPtr(handle)) is not { } region)
+                    if (!long.TryParse(args[index], CultureInfo.InvariantCulture, out var handle))
                         return;
-                    saved.Add(region);
                     var bar = bars.Find(bar => bar.Handle.ToInt64() == handle);
                     if (bar.Handle == IntPtr.Zero)
                         return;
+
+                    var promotion = EventWaitHandle.OpenExisting(PeekEventName(args[3], args[index]));
+                    if (ExplorerTaskbarRegion.Capture(bar.Handle) is not { } region)
+                    {
+                        promotion.Dispose();
+                        return;
+                    }
+                    saved.Add((region, promotion));
                     if (TaskbarWorkspace.Capture(bar) is { } workspace)
                         workspaces.Add(workspace);
                 }
@@ -115,8 +135,11 @@ namespace SmartTaskbar
                     if (!Fun.IsAutoHide())
                         foreach (var workspace in workspaces)
                             workspace.Restore();
-                    foreach (var region in saved)
+                    foreach (var (region, promotion) in saved)
+                    {
+                        region.RestorePeek(promotion);
                         region.Restore();
+                    }
                 }
             }
             catch (Exception error) when (error is ArgumentException or InvalidOperationException or IOException or
@@ -126,8 +149,11 @@ namespace SmartTaskbar
             }
             finally
             {
-                foreach (var region in saved)
+                foreach (var (region, promotion) in saved)
+                {
                     region.Dispose();
+                    promotion.Dispose();
+                }
             }
         }
 
@@ -140,6 +166,8 @@ namespace SmartTaskbar
             _ready.Dispose();
             _restore.Dispose();
             _cancel.Dispose();
+            foreach (var promotion in _peekPromotions.Values)
+                promotion.Dispose();
             _worker.Dispose();
         }
     }

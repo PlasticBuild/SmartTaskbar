@@ -8,6 +8,15 @@ namespace SmartTaskbar
         private const int EmptyRegion = 1;
         private const int IntersectRegions = 1;
         private const int CopyRegion = 5;
+        private const int ExtendedStyle = -20;
+        private const int TopmostStyle = 0x8;
+        private const uint NoSize = 0x1;
+        private const uint NoMove = 0x2;
+        private const uint NoActivate = 0x10;
+        private const uint NoOwnerZOrder = 0x200;
+        private const uint ReorderFlags = NoSize | NoMove | NoActivate | NoOwnerZOrder;
+        private static readonly IntPtr Topmost = new(-1);
+        private static readonly IntPtr NotTopmost = new(-2);
 
         private IntPtr _original = original;
 
@@ -51,6 +60,28 @@ namespace SmartTaskbar
 
         public bool IsEmpty() => GetWindowRgnBox(window, out _) == EmptyRegion;
 
+        public void RaiseForPeek(EventWaitHandle promotion)
+        {
+            if (!IsSameWindow())
+                return;
+
+            // Record a change of band before touching Explorer so the recovery process can undo it.
+            if (!IsTopmost())
+                promotion.Set();
+            SetWindowPos(window, Topmost, 0, 0, 0, 0, ReorderFlags);
+        }
+
+        public bool RestorePeek(EventWaitHandle promotion)
+        {
+            if (!promotion.WaitOne(0))
+                return true;
+            if (IsSameWindow() && IsTopmost() && !SetWindowPos(window, NotTopmost, 0, 0, 0, 0, ReorderFlags))
+                return false;
+
+            promotion.Reset();
+            return true;
+        }
+
         public bool Restore()
         {
             if (!IsSameWindow())
@@ -72,6 +103,8 @@ namespace SmartTaskbar
         private bool IsSameWindow()
             => GetWindowThreadProcessId(window, out var current) != 0 && current == processId &&
                 window.GetClassName() is TaskbarHelper.PrimaryClass or "Shell_SecondaryTrayWnd";
+
+        private bool IsTopmost() => (GetWindowStyle(window, ExtendedStyle) & TopmostStyle) != 0;
 
         private bool SetRegion(IntPtr region)
         {

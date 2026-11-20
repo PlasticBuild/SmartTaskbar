@@ -36,7 +36,7 @@ namespace SmartTaskbar
         }
 
         // Returns true while the recovery process is still starting.
-        public bool Apply(TaskbarCoverage[] coverage, IntPtr revealed, long now)
+        public bool Apply(TaskbarCoverage[] coverage, IntPtr revealed, IntPtr obscuredPeek, long now)
         {
             if (_failed || _trays.Length != coverage.Length || _trays.Length == 0)
                 return false;
@@ -79,7 +79,18 @@ namespace SmartTaskbar
                     return false;
                 }
 
-                var visible = coverage[index] == TaskbarCoverage.Clear || tray.Bar.Handle == revealed;
+                var covered = coverage[index] != TaskbarCoverage.Clear;
+                var visible = !covered || tray.Bar.Handle == revealed;
+                var promotion = _recovery.PeekPromotion(tray.Bar.Handle);
+                if (!covered)
+                {
+                    // Explorer can restore the tray's normal stacking when fullscreen ends.
+                    promotion.Reset();
+                }
+                else if (tray.Bar.Handle == obscuredPeek)
+                {
+                    tray.Region!.RaiseForPeek(promotion);
+                }
                 if (visible && tray.Clipped && tray.Pixels == 0 && !tray.Region!.IsEmpty())
                 {
                     // Explorer has already brought the tray back, such as when leaving a fullscreen app.
@@ -110,7 +121,8 @@ namespace SmartTaskbar
             var animating = false;
             foreach (var tray in _trays)
             {
-                animating |= tray.Animation.IsAnimating(now);
+                var moving = tray.Animation.IsAnimating(now);
+                animating |= moving;
                 var pixels = (int)Math.Round(tray.Animation.FractionAt(now) * tray.Depth);
                 if (pixels >= tray.Depth)
                 {
@@ -131,6 +143,11 @@ namespace SmartTaskbar
                     tray.Clipped = true;
                 }
                 tray.Pixels = pixels;
+                if (pixels == 0 && !moving && !tray.Region!.RestorePeek(_recovery.PeekPromotion(tray.Bar.Handle)))
+                {
+                    CancelChanges();
+                    return;
+                }
             }
             _frames.Enabled = animating;
         }
@@ -153,6 +170,8 @@ namespace SmartTaskbar
 
                 if (tray.Region is { } region)
                 {
+                    if (_recovery is not null && !region.RestorePeek(_recovery.PeekPromotion(tray.Bar.Handle)))
+                        _recovery.RequestRestore();
                     if (tray.Clipped && !region.Restore())
                         _recovery?.RequestRestore();
                     region.Dispose();
