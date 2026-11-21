@@ -22,6 +22,7 @@ pub struct BottomIsland {
     pub start_width: i32,
     pub start_shift: i32,
     pub tray_shift: i32,
+    pub search_width: i32,
     pub search_inset: i32,
 }
 pub type Geometry = Option<BottomIsland>;
@@ -34,6 +35,7 @@ const START: &str =
 const SEARCH: &str = "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid";
 const SEARCH_SURFACE: &str =
     "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid > Grid#OuterBorderGrid";
+const CLOUD_PROMPTS: &str = r#"#menuContainer .menuItem[aria-label="Turn on cloud search for your Microsoft account"], #menuContainer .menuItem[aria-label="Turn on cloud search for your work or school account"]"#;
 
 fn rule<S: Into<String>>(
     profile: &mut Profile,
@@ -63,6 +65,13 @@ fn style_rule<S: Into<String>>(
 
 fn opacity(s: &Settings) -> String {
     format!("{:.2}", 1.0 - f64::from(s.transparency) / 100.0)
+}
+
+fn taskbar_brush(s: &Settings) -> String {
+    format!(
+        "<SolidColorBrush Color=\"{{ThemeResource SystemChromeMediumColor}}\" Opacity=\"{}\" />",
+        opacity(s)
+    )
 }
 
 fn corner(s: &Settings, joined: bool) -> String {
@@ -130,7 +139,7 @@ fn template(text: &str, s: &Settings) -> Result<Profile, String> {
             .replace("__TRANSPARENCY__", &s.transparency.to_string())
             .replace(
                 "<AcrylicBrush TintColor=\"{ThemeResource SystemChromeMediumColor}\" TintOpacity=\"__TINT_OPACITY__\" FallbackColor=\"{ThemeResource SystemChromeLowColor}\" />",
-                &format!("<SolidColorBrush Color=\"{{ThemeResource SystemChromeMediumColor}}\" Opacity=\"{}\" />", opacity(s)),
+                &taskbar_brush(s),
             );
         if val.contains("__") {
             return Err(format!("Unresolved appearance value: {val}"));
@@ -283,14 +292,6 @@ fn taskbar(s: &Settings, joined: bool, reserve: crate::media::Reserve) -> Result
     Ok(profile)
 }
 
-fn alignment(s: &Settings) -> &'static str {
-    match s.alignment {
-        Alignment::Left => "Left",
-        Alignment::Center => "Center",
-        Alignment::Right => "Right",
-    }
-}
-
 fn style_search_results(profile: &mut Profile, s: &Settings) {
     let mut css = |target, declarations: &[&str]| {
         style_rule(
@@ -300,19 +301,18 @@ fn style_search_results(profile: &mut Profile, s: &Settings) {
             declarations.iter().copied(),
         );
     };
-    // The Search results are drawn by a WebView. Let its HTML surfaces reveal the
-    // acrylic painted behind them by the native Search shell.
+    // Let the native panel supply the background in both EdgeHTML and WebView2.
     css(
         "html, body, #rootContainer, #root, .scr, .main-content-container, .search-results-grid, #searchPane, #qfContainer, #qfPreviewPane, .searchResults",
         &["background: transparent !important"],
     );
     // Keep both panes visible. Windows has used both flex and grid layouts for them.
     css(
-        "#root.twoColumns .search-results-grid:has(> #qfPreviewPane), #root.twoColumns .main-content-container:has(> #qfPreviewPane), #root.twoColumns #searchPane:has(> #qfPreviewPane), #root.twoColumns:has(> #qfPreviewPane)",
+        "#root.twoColumns .search-results-grid, #root.twoColumns .main-content-container, #root.twoColumns #searchPane, #root.twoColumns",
         &["grid-template-columns: minmax(0, 44fr) minmax(0, 56fr) !important"],
     );
     css(
-        "#root.twoColumns .leftPane, #root.twoColumns .left-pane, #root.twoColumns #qfContainer:has(+ #qfPreviewPane)",
+        "#root.twoColumns .leftPane, #root.twoColumns .left-pane, #root.twoColumns #qfContainer",
         &[
             "box-sizing: border-box !important",
             "flex: 0 1 44% !important",
@@ -331,19 +331,20 @@ fn style_search_results(profile: &mut Profile, s: &Settings) {
         ],
     );
     css(
-        "#root.twoColumns :is(.suggDetailsContainer, .primaryText, .groupTitle)",
+        "#root.twoColumns .suggDetailsContainer, #root.twoColumns .primaryText, #root.twoColumns .groupTitle",
         &["min-width: 0 !important"],
     );
+    // Cover Windows builds where the account rows bypass MenuFactory's dropdown model.
+    css(CLOUD_PROMPTS, &["display: none !important"]);
     let radius = (s.radius + 4).clamp(8, 20);
     style_rule(
         profile,
         "webContentStyles",
-        ".previewContainer, #qfPreviewPane:not(:has(.previewContainer))",
+        ".previewContainer",
         [
             "box-sizing: border-box !important".into(),
             "max-width: 100% !important".into(),
-            "background: color-mix(in srgb, currentColor 7%, transparent) !important".into(),
-            "border-color: color-mix(in srgb, currentColor 13%, transparent) !important".into(),
+            "background: transparent !important".into(),
             format!("border-radius: {radius}px !important"),
         ],
     );
@@ -366,17 +367,22 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
         "Border#AcrylicOverlay",
         ["Background=Transparent".into(), corner(s, joined)],
     );
-    rule(&mut profile, SEARCH_SURFACE, glass(s, joined));
     rule(
         &mut profile,
-        &format!(
-            "{SEARCH_SURFACE} > Grid#BorderGrid > Border#AppBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#AccentAppBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#LayerBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#AccentLayerBorder"
-        ),
+        "Border#AppBorder",
         [
-            "Background=Transparent".into(),
-            "BorderThickness=0".into(),
+            format!("Background:={}", taskbar_brush(s)),
+            "Visibility=Visible".into(),
+            "BorderBrush:=<SolidColorBrush Color=\"{ThemeResource SurfaceStrokeColorDefault}\" />"
+                .into(),
             corner(s, joined),
+            "BorderThickness=1".into(),
         ],
+    );
+    rule(
+        &mut profile,
+        "Border#AccentAppBorder, Border#LayerBorder, Border#AccentLayerBorder",
+        ["Visibility=Collapsed"],
     );
     rule(
         &mut profile,
@@ -389,22 +395,41 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
         [corner(s, joined)],
     );
     if let Some(island) = geometry {
-        // The caller accounts for narrow monitors when measuring Start. Search's native
-        // host has a 600-DIP layout; keep wider islands from clipping its controls.
         let width = island.start_width.min(START_MAX_DIP);
         rule(
             &mut profile,
             START,
             [format!("Width={width}"), format!("MaxWidth={width}")],
         );
-        let mut search = vec![
-            format!("Width={}", width.min(600)),
-            format!("HorizontalAlignment={}", alignment(s)),
+        let width = island.search_width;
+        let search_width = [
+            "MinWidth=0".into(),
+            format!("Width={width}"),
+            format!("MaxWidth={width}"),
         ];
+        let mut search = search_width.to_vec();
+        search.push("HorizontalAlignment=Center".into());
         if island.search_inset > 0 {
             search.push(format!("Margin=0,0,0,{}", island.search_inset));
         }
         rule(&mut profile, SEARCH, search);
+        rule(
+            &mut profile,
+            "Grid#QueryFormulationRoot",
+            search_width
+                .clone()
+                .into_iter()
+                .chain(["HorizontalAlignment=Stretch".into()]),
+        );
+        rule(
+            &mut profile,
+            SEARCH_SURFACE,
+            search_width
+                .into_iter()
+                .chain(["Background=Transparent".into()]),
+        );
+    } else {
+        rule(&mut profile, SEARCH_SURFACE, ["Background=Transparent"]);
     }
     style_search_results(&mut profile, s);
     style_context_menus(&mut profile, s);
@@ -525,7 +550,10 @@ pub fn build_with_reserve(
     s.validate()?;
     let geometry = geometry.filter(|_| s.island);
     if geometry.is_some_and(|island| {
-        island.start_width <= 0 || island.tray_shift > 0 || island.search_inset < 0
+        island.start_width <= 0
+            || island.tray_shift > 0
+            || island.search_width <= 0
+            || island.search_inset < 0
     }) {
         return Err("Invalid bottom island geometry for the shell profiles.".into());
     }
@@ -550,6 +578,7 @@ mod tests {
             start_width,
             start_shift: -110,
             tray_shift,
+            search_width: start_width.clamp(1, 1020),
             search_inset,
         })
     }
@@ -685,10 +714,14 @@ mod tests {
         };
         for geometry in [None, geometry(545, -27, 17)] {
             let profile = build(&settings, geometry).unwrap().remove(1);
-            let surface = styles(&profile, SEARCH_SURFACE);
-            assert!(surface[0].contains("TintOpacity=\"0.27\""));
+            let background = styles(&profile, "Border#AppBorder");
             assert_eq!(
-                surface[3],
+                background[0],
+                format!("Background:={}", taskbar_brush(&settings))
+            );
+            assert!(background[0].contains("Opacity=\"0.27\""));
+            assert_eq!(
+                background[3],
                 if geometry.is_some() {
                     "CornerRadius=17,17,0,0"
                 } else {
@@ -697,11 +730,9 @@ mod tests {
             );
             let glass_layers = styles(
                 &profile,
-                &format!(
-                    "{SEARCH_SURFACE} > Grid#BorderGrid > Border#AppBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#AccentAppBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#LayerBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#AccentLayerBorder"
-                ),
+                "Border#AccentAppBorder, Border#LayerBorder, Border#AccentLayerBorder",
             );
-            assert_eq!(glass_layers[0], "Background=Transparent");
+            assert_eq!(glass_layers[0], "Visibility=Collapsed");
             let web = |property: &str| {
                 profile
                     .as_object()
@@ -712,7 +743,10 @@ mod tests {
             assert!(web("background: transparent !important"));
             assert!(web("flex: 0 1 44% !important"));
             assert!(web("border-radius: 15px !important"));
-            assert!(!web("display: none !important"));
+            assert_eq!(
+                styles(&profile, CLOUD_PROMPTS),
+                ["display: none !important"]
+            );
         }
     }
 
@@ -730,7 +764,13 @@ mod tests {
         assert_eq!(styles(&result[1], START), ["Width=568", "MaxWidth=568"]);
         assert_eq!(
             styles(&result[1], SEARCH),
-            ["Width=568", "HorizontalAlignment=Right", "Margin=0,0,0,28"]
+            [
+                "MinWidth=0",
+                "Width=568",
+                "MaxWidth=568",
+                "HorizontalAlignment=Center",
+                "Margin=0,0,0,28"
+            ]
         );
         for panel in ["Grid#NotificationCenterGrid", "Grid#CalendarCenterGrid"] {
             assert!(styles(&result[2], panel).contains(&"Width=332".into()));
@@ -743,7 +783,8 @@ mod tests {
         );
         let limit = build(&s, geometry(3000, 0, 0)).unwrap();
         assert!(styles(&limit[1], START).contains(&format!("Width={START_MAX_DIP}")));
-        assert!(styles(&limit[1], SEARCH).contains(&"Width=600".into()));
+        assert!(styles(&limit[1], SEARCH).contains(&"Width=1020".into()));
+        assert!(styles(&limit[1], "Grid#QueryFormulationRoot").contains(&"Width=1020".into()));
         assert!(
             styles(&build(&s, geometry(320, 0, 0)).unwrap()[1], START)
                 .contains(&"Width=320".into())

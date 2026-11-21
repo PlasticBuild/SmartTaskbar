@@ -68,7 +68,7 @@ pub fn inspect() -> Result<String, String> {
         ));
     }
     if let Some(island) = primary_island() {
-        lines.push(format!("Primary bottom island uses a {} DIP Start panel shifted {} DIPs, a {} DIP tray shift, and a {} DIP Search inset.", island.start_width, island.start_shift, island.tray_shift, island.search_inset));
+        lines.push(format!("Primary bottom island uses a {} DIP Start panel shifted {} DIPs, a {} DIP tray shift, and a {} DIP Search panel with a {} DIP inset.", island.start_width, island.start_shift, island.tray_shift, island.search_width, island.search_inset));
     }
     Ok(lines.join("\n"))
 }
@@ -93,6 +93,9 @@ fn layout(bar: Bar, face: Option<Rect>) -> Geometry {
         start_width,
         start_shift,
         tray_shift,
+        search_width: native::px_to_dip(face.width(), bar.dpi)
+            .min(available)
+            .max(1),
         search_inset,
     })
 }
@@ -1185,6 +1188,7 @@ mod tests {
         let face = Some(Rect::new(-350, 1712, -2, 1796));
         let island = layout(bar(720, 192, 1800), face).unwrap();
         assert_eq!(island.start_width, 360);
+        assert_eq!(island.search_width, 174);
         assert_eq!(island.start_shift, 0);
         assert_eq!(island.tray_shift, 0);
     }

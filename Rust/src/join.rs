@@ -49,7 +49,6 @@ fn gap(bar: NativeBar, island: Rect, panel: Panel, dpi: u32) -> Option<Rect> {
     let host = panel.bounds.intersection(bar.display)?;
     let max_gap = px(48, dpi);
     let gutter = px(12, dpi);
-    let center = |start: i32, end: i32, width: i32| start + (end - start - width) / 2;
     let rect = match bar.edge {
         Edge::Bottom => {
             // The visible face occupies only part of the transparent Start/Search
@@ -63,25 +62,7 @@ fn gap(bar: NativeBar, island: Rect, panel: Panel, dpi: u32) -> Option<Rect> {
                         gutter,
                     )
                 }
-                MenuKind::Search => {
-                    let start = anchored_start(bar, face, host.height(), dpi);
-                    let width = start
-                        .width()
-                        .min(px(600, dpi))
-                        .min(host.width())
-                        .saturating_sub(2 * gutter);
-                    if width <= 0 {
-                        return None;
-                    }
-                    let left = if start.left <= bar.display.left.saturating_add(2 * gutter) {
-                        host.left + gutter
-                    } else if start.right >= bar.display.right.saturating_sub(2 * gutter) {
-                        host.right - gutter - width
-                    } else {
-                        center(host.left, host.right, width)
-                    };
-                    (left, left + width, gutter)
-                }
+                MenuKind::Search => (face.left.max(host.left), face.right.min(host.right), gutter),
                 MenuKind::Notifications | MenuKind::QuickSettings => {
                     let width = px(
                         if panel.kind == MenuKind::Notifications {

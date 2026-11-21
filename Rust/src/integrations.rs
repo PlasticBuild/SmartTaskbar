@@ -74,6 +74,7 @@ pub fn check_profiles(settings: &Settings) -> Result<(), String> {
             start_width: 580,
             start_shift: -110,
             tray_shift: -108,
+            search_width: 622,
             search_inset: 30,
         }),
     ] {
