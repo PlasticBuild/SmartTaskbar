@@ -30,7 +30,7 @@ use windows_sys::Win32::{
 mod preview;
 use preview::Paint;
 #[path = "appearance/web_search.rs"]
-mod web_search;
+pub(crate) mod web_search;
 
 const LAYOUT: u16 = 101;
 const ALIGN: u16 = 102;
@@ -60,6 +60,7 @@ const RELEASES: u16 = 125;
 const REPOSITORY: u16 = 126;
 const WEB_QUERY: u16 = 127;
 const WEB_OPEN: u16 = 128;
+const MATCH_MENU_WIDTH: u16 = 129;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
 const UPDATE_TIMER: usize = 3;
@@ -128,13 +129,13 @@ impl Page {
             let left = usable - right - 20;
             (
                 Box2::at(inset, 102, left, (height - 175).clamp(360, 610)),
-                Box2::at(inset + left + 20, 102, right, 820),
+                Box2::at(inset + left + 20, 102, right, 850),
             )
         } else {
             let h = (usable * 53 / 100).clamp(215, 340);
             (
                 Box2::at(inset, 102, usable, h),
-                Box2::at(inset, 102 + h + 14, usable, 820),
+                Box2::at(inset, 102 + h + 14, usable, 850),
             )
         };
         Self {
@@ -157,17 +158,18 @@ impl Page {
             ICON_SIZE => (238, 25),
             HOVER => (284, 25),
             PRESS => (330, 25),
-            MONITOR => (380, 25),
-            OVERRIDE => (411, 23),
-            ZONE => (459, 25),
-            OUTSIDE => (507, 25),
-            SHARED => (555, 25),
-            MOTION => (587, 23),
-            SIGN_IN => (613, 23),
-            SEARCH => (639, 23),
-            PROVIDER => (686, 25),
-            MEDIA => (722, 23),
-            MEDIA_SIDE => (768, 25),
+            MATCH_MENU_WIDTH => (365, 23),
+            MONITOR => (410, 25),
+            OVERRIDE => (441, 23),
+            ZONE => (489, 25),
+            OUTSIDE => (537, 25),
+            SHARED => (585, 25),
+            MOTION => (617, 23),
+            SIGN_IN => (643, 23),
+            SEARCH => (669, 23),
+            PROVIDER => (716, 25),
+            MEDIA => (752, 23),
+            MEDIA_SIDE => (798, 25),
             FULLSCREEN => {
                 return Box2::at(
                     self.preview.x + 13,
@@ -550,7 +552,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     }
                 } else if note == BN_CLICKED {
                     match id {
-                        MOTION | SIGN_IN | SEARCH | MEDIA => read_controls(hwnd, ptr),
+                        MATCH_MENU_WIDTH | MOTION | SIGN_IN | SEARCH | MEDIA => {
+                            read_controls(hwnd, ptr)
+                        }
                         MENU | FULLSCREEN => toggle_preview(hwnd, ptr, id),
                         APPLY => save(hwnd, ptr),
                         ENGINE => engine(hwnd, ptr),
@@ -683,7 +687,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         for id in (LAYOUT..=TRANSPARENCY)
             .chain([ICON_SIZE])
             .chain(HOVER..=MEDIA_SIDE)
-            .chain(MONITOR..=WEB_OPEN)
+            .chain(MONITOR..=MATCH_MENU_WIDTH)
         {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
@@ -731,6 +735,11 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 MOTION => (
                     "BUTTON",
                     "Animate menus and media player",
+                    BS_AUTOCHECKBOX as u32,
+                ),
+                MATCH_MENU_WIDTH => (
+                    "BUTTON",
+                    "Match Start and Search to island width",
                     BS_AUTOCHECKBOX as u32,
                 ),
                 MEDIA => (
@@ -868,6 +877,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
             SendDlgItemMessageW(hwnd, id as i32, TBM_SETPOS, 1, value as isize);
         }
         for (id, on) in [
+            (MATCH_MENU_WIDTH, s.draft.match_start_search_width),
             (MOTION, s.draft.animate),
             (SIGN_IN, s.draft.start_at_sign_in),
             (SEARCH, s.draft.search_redirect),
@@ -906,7 +916,7 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=WEB_OPEN {
+        for id in LAYOUT..=MATCH_MENU_WIDTH {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
@@ -956,8 +966,9 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
             tab,
             ..
         } = *state;
-        let mut placements = Vec::with_capacity((WEB_OPEN - LAYOUT + 1) as usize + LABELS.len());
-        for id in LAYOUT..=WEB_OPEN {
+        let mut placements =
+            Vec::with_capacity((MATCH_MENU_WIDTH - LAYOUT + 1) as usize + LABELS.len());
+        for id in LAYOUT..=MATCH_MENU_WIDTH {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
             let fixed = matches!(id, ENGINE | TABS | APPLY);
@@ -1177,6 +1188,7 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
         let check = |id| SendDlgItemMessageW(hwnd, id, BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
         let s = &mut *state;
         s.draft.island = sel(LAYOUT as i32) == 1;
+        s.draft.match_start_search_width = check(MATCH_MENU_WIDTH as i32);
         s.draft.alignment = match sel(ALIGN as i32) {
             0 => Alignment::Left,
             2 => Alignment::Right,
@@ -1235,6 +1247,10 @@ unsafe fn reflect(hwnd: HWND, state: *mut State) {
     unsafe {
         let s = &*state;
         EnableWindow(GetDlgItem(hwnd, ALIGN as i32), s.draft.island as i32);
+        EnableWindow(
+            GetDlgItem(hwnd, MATCH_MENU_WIDTH as i32),
+            s.draft.island as i32,
+        );
         EnableWindow(
             GetDlgItem(hwnd, MEDIA_SIDE as i32),
             s.draft.media_player as i32,

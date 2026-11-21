@@ -533,6 +533,12 @@ impl Join {
         }
         let mut open = false;
         if let Some(panel) = panel {
+            if !settings.match_start_search_width
+                && matches!(panel.kind, MenuKind::Start | MenuKind::Search)
+            {
+                self.clear();
+                return false;
+            }
             let Some(gap) = gap(bar, face, panel, dpi) else {
                 self.clear();
                 return false;

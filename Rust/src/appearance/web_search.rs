@@ -1,7 +1,7 @@
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, process::Command};
 use windows_sys::Win32::UI::Shell::{ASSOCF_IS_PROTOCOL, ASSOCSTR_EXECUTABLE, AssocQueryStringW};
 
-fn default_browser() -> Option<PathBuf> {
+pub(crate) fn default_browser() -> Option<PathBuf> {
     let mut executable = vec![0; 32_768];
     let mut length = executable.len() as u32;
     let result = unsafe {

@@ -19,6 +19,10 @@ $notices=foreach($crate in $metadata.packages){
     $folder=Join-Path $legal $name
     $null=New-Item -ItemType Directory -Force -Path $folder
     $files=@(Get-ChildItem -LiteralPath $source -File | Where-Object Name -Match '^(licen[cs]e|copying|notice|copyright)')
+    # These three crate archives omit their workspace's MIT license.
+    if (!$files -and $name -in 'webview2-com-0.39.1','webview2-com-sys-0.39.1','webview2-com-macros-0.8.1') {
+        $files=@(Get-Item -LiteralPath (Join-Path $PSScriptRoot 'licenses/webview2-rs-LICENSE.txt'))
+    }
     if (!$files) {throw "No license text located for $name"}
     foreach ($file in $files){Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $folder $file.Name) -Force}
     "$name  $($crate.license)"

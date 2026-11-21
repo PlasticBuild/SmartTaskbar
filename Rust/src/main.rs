@@ -9,6 +9,7 @@ mod migrate;
 mod policy;
 mod profiles;
 mod settings;
+mod start_web;
 mod updates;
 
 use settings::Settings;
@@ -59,6 +60,7 @@ impl Drop for SingleInstance {
 #[derive(Debug, PartialEq)]
 enum Action {
     Settings,
+    StartWebSearch(usize),
     Run,
     Stop,
     Pause,
@@ -91,6 +93,12 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<Pat
         }
         let next = match arg.to_str() {
             Some("--settings") => Action::Settings,
+            Some("--start-web-search") => Action::StartWebSearch(
+                it.next()
+                    .and_then(|value| value.to_str().and_then(|s| s.parse().ok()))
+                    .filter(|hwnd| *hwnd != 0)
+                    .ok_or("Supply the active Start Search window.")?,
+            ),
             Some("--run") => Action::Run,
             Some("--stop") => Action::Stop,
             Some("--pause") => Action::Pause,
@@ -235,11 +243,13 @@ fn prepare_update(path: &Path) -> Result<(), String> {
     if csharp_running() {
         return Err("Close the previous SmartTaskbar controller before installing.".into());
     }
-    let settings = appearance::window();
-    if !settings.is_null() {
-        unsafe { PostMessageW(settings, WM_CLOSE, 0, 0) };
+    let windows = [appearance::window(), start_web::window()];
+    if windows.iter().any(|hwnd| !hwnd.is_null()) {
+        for hwnd in windows.into_iter().filter(|hwnd| !hwnd.is_null()) {
+            unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+        }
         let deadline = Instant::now() + Duration::from_secs(8);
-        while !appearance::window().is_null() {
+        while !appearance::window().is_null() || !start_web::window().is_null() {
             if Instant::now() >= deadline {
                 return Err("Close SmartTaskbar Settings before continuing.".into());
             }
@@ -289,6 +299,9 @@ fn execute() -> Result<(), String> {
     }
     let path = std::path::absolute(path.unwrap_or(settings::default_path()?))
         .map_err(|e| e.to_string())?;
+    if let Action::StartWebSearch(hwnd) = action {
+        return start_web::show(hwnd, &path);
+    }
     if action == Action::PrepareUpdate {
         return prepare_update(&path);
     }
@@ -344,7 +357,9 @@ fn execute() -> Result<(), String> {
 fn main() {
     if let Err(error) = execute() {
         eprintln!("{error}");
-        if env::args_os().len() == 1 || env::args_os().any(|v| v == "--settings") {
+        if env::args_os().len() == 1
+            || env::args_os().any(|v| v == "--settings" || v == "--start-web-search")
+        {
             unsafe {
                 MessageBoxW(
                     std::ptr::null_mut(),

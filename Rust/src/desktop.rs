@@ -602,6 +602,7 @@ struct Model {
     cursor: Option<policy::Point>,
     pointer_idle_ms: Option<u32>,
     native_touch: bool,
+    start_web: crate::start_web::Button,
 }
 impl Model {
     fn sync(&mut self, guard: &mut rescue::Monitor, topology_changed: bool) -> Result<(), String> {
@@ -1078,6 +1079,7 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
             } else {
                 native::scene(&mut model.names)
             };
+            model.start_web.update(&model.scene.panels, &settings);
             next_scene = now + scene_fallback;
             publish = true;
         }

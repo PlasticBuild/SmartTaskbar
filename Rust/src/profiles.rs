@@ -520,7 +520,7 @@ fn notifications(s: &Settings, joined: bool) -> Profile {
     profile
 }
 
-fn positions(geometry: Geometry) -> Profile {
+fn positions(geometry: Geometry, start: Geometry) -> Profile {
     let mut profile = Profile::new();
     for panel in ["actionCenter", "notificationCenter"] {
         profile.insert(
@@ -539,7 +539,7 @@ fn positions(geometry: Geometry) -> Profile {
     }
     profile.insert(
         "startMenu.horizontalAlignment".into(),
-        if geometry.is_some() {
+        if start.is_some() {
             "center"
         } else {
             "windowsDefault"
@@ -553,7 +553,7 @@ fn positions(geometry: Geometry) -> Profile {
     profile.insert("startMenu.verticalShift".into(), "0".into());
     profile.insert(
         "startMenu.horizontalShift".into(),
-        geometry.map_or(0, |island| island.start_shift).to_string(),
+        start.map_or(0, |island| island.start_shift).to_string(),
     );
     profile
 }
@@ -580,11 +580,12 @@ pub fn build_with_reserve(
         return Err("Invalid bottom island geometry for the shell profiles.".into());
     }
     let joined = geometry.is_some();
+    let start_search_geometry = geometry.filter(|_| s.match_start_search_width);
     [
         taskbar(s, joined, reserve)?,
-        start_search(s, geometry),
+        start_search(s, start_search_geometry),
         notifications(s, joined),
-        positions(geometry),
+        positions(geometry, start_search_geometry),
     ]
     .into_iter()
     .map(|map| serde_json::to_value(map).map_err(|err| err.to_string()))
@@ -732,6 +733,7 @@ mod tests {
         let settings = Settings {
             radius: 11,
             transparency: 73,
+            match_start_search_width: true,
             ..Settings::default()
         };
         for geometry in [None, geometry(545, -27, 17)] {
@@ -773,9 +775,43 @@ mod tests {
     }
 
     #[test]
+    fn width_matching_is_opt_in_and_only_changes_bottom_island_start_and_search() {
+        let island = geometry(568, -164, 28);
+        let native = build(&Settings::default(), island).unwrap();
+        assert_eq!(native[3]["startMenu.horizontalAlignment"], "windowsDefault");
+        assert_eq!(native[3]["startMenu.horizontalShift"], "0");
+        assert_eq!(native[3]["notificationCenter.horizontalShift"], "-164");
+        let search = &native[1];
+        for selector in [START, SEARCH, "Grid#QueryFormulationRoot"] {
+            assert!(
+                !search
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .any(|value| value == selector)
+            );
+        }
+        let frame = styles(search, "Border#AppBorder");
+        assert!(frame.iter().any(|entry| entry.starts_with("Background:=")));
+        assert!(frame.contains(&"CornerRadius=4".into()));
+        assert!(!frame.iter().any(|entry| entry.contains("Width=")));
+
+        let mut settings = Settings {
+            island: false,
+            match_start_search_width: true,
+            ..Settings::default()
+        };
+        let full = build(&settings, island).unwrap();
+        assert_eq!(full, build(&settings, None).unwrap());
+        settings.island = true;
+        assert_eq!(build(&settings, None).unwrap()[1], full[1]);
+    }
+
+    #[test]
     fn bottom_width_shift_and_search_inset_are_available_before_open() {
         let s = Settings {
             alignment: Alignment::Right,
+            match_start_search_width: true,
             ..Settings::default()
         };
         let result = build(&s, geometry(568, -164, 28)).unwrap();
