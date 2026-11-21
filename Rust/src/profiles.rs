@@ -24,17 +24,29 @@ const FULL: &str = include_str!("../assets/taskbar/FullWidth.json");
 const START: &str =
     "StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu";
 const SEARCH: &str = "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid";
+const SEARCH_SURFACE: &str =
+    "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid > Grid#OuterBorderGrid";
 
 fn rule<S: Into<String>>(
     profile: &mut Profile,
     target: &str,
     properties: impl IntoIterator<Item = S>,
 ) {
+    style_rule(profile, "controlStyles", target, properties);
+}
+
+fn style_rule<S: Into<String>>(
+    profile: &mut Profile,
+    collection: &str,
+    target: &str,
+    properties: impl IntoIterator<Item = S>,
+) {
+    let prefix = format!("{collection}[");
     let index = profile
         .keys()
-        .filter(|key| key.ends_with("].target"))
+        .filter(|key| key.starts_with(&prefix) && key.ends_with("].target"))
         .count();
-    let group = format!("controlStyles[{index}]");
+    let group = format!("{prefix}{index}]");
     profile.insert(format!("{group}.target"), target.into());
     for (n, value) in properties.into_iter().enumerate() {
         profile.insert(format!("{group}.styles[{n}]"), value.into());
@@ -271,6 +283,64 @@ fn alignment(s: &Settings) -> &'static str {
     }
 }
 
+fn style_search_results(profile: &mut Profile, s: &Settings) {
+    let mut css = |target, declarations: &[&str]| {
+        style_rule(
+            profile,
+            "webContentStyles",
+            target,
+            declarations.iter().copied(),
+        );
+    };
+    // The Search results are drawn by a WebView. Let its HTML surfaces reveal the
+    // acrylic painted behind them by the native Search shell.
+    css(
+        "html, body, #rootContainer, #root, .scr, .main-content-container, .search-results-grid, #searchPane, #qfContainer, #qfPreviewPane, .searchResults",
+        &["background: transparent !important"],
+    );
+    // Keep both panes visible. Windows has used both flex and grid layouts for them.
+    css(
+        "#root.twoColumns .search-results-grid:has(> #qfPreviewPane), #root.twoColumns .main-content-container:has(> #qfPreviewPane), #root.twoColumns #searchPane:has(> #qfPreviewPane), #root.twoColumns:has(> #qfPreviewPane)",
+        &["grid-template-columns: minmax(0, 44fr) minmax(0, 56fr) !important"],
+    );
+    css(
+        "#root.twoColumns .leftPane, #root.twoColumns .left-pane, #root.twoColumns #qfContainer:has(+ #qfPreviewPane)",
+        &[
+            "box-sizing: border-box !important",
+            "flex: 0 1 44% !important",
+            "width: auto !important",
+            "min-width: 0 !important",
+            "max-width: none !important",
+        ],
+    );
+    css(
+        "#root.twoColumns #qfPreviewPane",
+        &[
+            "box-sizing: border-box !important",
+            "flex: 1 1 0% !important",
+            "width: auto !important",
+            "min-width: 0 !important",
+        ],
+    );
+    css(
+        "#root.twoColumns :is(.suggDetailsContainer, .primaryText, .groupTitle)",
+        &["min-width: 0 !important"],
+    );
+    let radius = (s.radius + 4).clamp(8, 20);
+    style_rule(
+        profile,
+        "webContentStyles",
+        ".previewContainer, #qfPreviewPane:not(:has(.previewContainer))",
+        [
+            "box-sizing: border-box !important".into(),
+            "max-width: 100% !important".into(),
+            "background: color-mix(in srgb, currentColor 7%, transparent) !important".into(),
+            "border-color: color-mix(in srgb, currentColor 13%, transparent) !important".into(),
+            format!("border-radius: {radius}px !important"),
+        ],
+    );
+}
+
 fn start_search(s: &Settings, geometry: Geometry) -> Profile {
     let mut profile = Profile::from([
         ("theme".into(), "".into()),
@@ -278,15 +348,28 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
         ("webContentCustomJs".into(), "".into()),
     ]);
     let joined = geometry.is_some();
+    rule(&mut profile, "Border#AcrylicBorder", glass(s, joined));
     rule(
         &mut profile,
-        "Border#AcrylicBorder, Border#AppBorder, Border#AccentAppBorder",
-        glass(s, joined),
+        "Border#AcrylicOverlay",
+        ["Background=Transparent".into(), corner(s, joined)],
+    );
+    rule(&mut profile, SEARCH_SURFACE, glass(s, joined));
+    rule(
+        &mut profile,
+        &format!(
+            "{SEARCH_SURFACE} > Grid#BorderGrid > Border#AppBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#AccentAppBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#LayerBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#AccentLayerBorder"
+        ),
+        [
+            "Background=Transparent".into(),
+            "BorderThickness=0".into(),
+            corner(s, joined),
+        ],
     );
     rule(
         &mut profile,
-        "Border#AcrylicOverlay, Border#LayerBorder, Border#AccentLayerBorder",
-        ["Background=Transparent".into(), corner(s, joined)],
+        &format!("{SEARCH_SURFACE} > Grid#BorderGrid, Grid#WebViewGrid"),
+        ["Background=Transparent"],
     );
     rule(
         &mut profile,
@@ -310,12 +393,8 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
             search.push(format!("Margin=0,0,0,{bottom}"))
         }
         rule(&mut profile, SEARCH, search);
-        rule(
-            &mut profile,
-            &format!("{SEARCH} > Grid#OuterBorderGrid"),
-            glass(s, true),
-        );
     }
+    style_search_results(&mut profile, s);
     style_context_menus(&mut profile, s);
     profile
 }
@@ -539,21 +618,67 @@ mod tests {
                     if i == 3 {
                         continue;
                     }
-                    let count = map.keys().filter(|k| k.ends_with("].target")).count();
-                    assert!(count > 0);
-                    for n in 0..count {
-                        let name = map[&format!("controlStyles[{n}].target")].as_str().unwrap();
-                        let items = styles(profile, name);
-                        assert!(!items.is_empty());
-                        assert_eq!(
-                            items.len(),
-                            map.keys()
-                                .filter(|k| k.starts_with(&format!("controlStyles[{n}].styles[")))
-                                .count()
-                        );
+                    for collection in ["controlStyles", "webContentStyles"] {
+                        let count = map
+                            .keys()
+                            .filter(|k| k.starts_with(collection) && k.ends_with("].target"))
+                            .count();
+                        assert_eq!(count > 0, collection == "controlStyles" || i == 1);
+                        for n in 0..count {
+                            let key = format!("{collection}[{n}]");
+                            let name = map[&format!("{key}.target")].as_str().unwrap();
+                            let items = styles(profile, name);
+                            assert!(!items.is_empty());
+                            assert_eq!(
+                                items.len(),
+                                map.keys()
+                                    .filter(|k| k.starts_with(&format!("{key}.styles[")))
+                                    .count()
+                            );
+                        }
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn search_results_reveal_the_native_glass_in_each_layout() {
+        let settings = Settings {
+            radius: 11,
+            transparency: 73,
+            ..Settings::default()
+        };
+        for geometry in [None, Some((545, -27, 17))] {
+            let profile = build(&settings, geometry).unwrap().remove(1);
+            let surface = styles(&profile, SEARCH_SURFACE);
+            assert!(surface[0].contains("TintOpacity=\"0.27\""));
+            assert_eq!(
+                surface[3],
+                if geometry.is_some() {
+                    "CornerRadius=17,17,0,0"
+                } else {
+                    "CornerRadius=17"
+                }
+            );
+            let glass_layers = styles(
+                &profile,
+                &format!(
+                    "{SEARCH_SURFACE} > Grid#BorderGrid > Border#AppBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#AccentAppBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#LayerBorder, {SEARCH_SURFACE} > Grid#BorderGrid > Border#AccentLayerBorder"
+                ),
+            );
+            assert_eq!(glass_layers[0], "Background=Transparent");
+            let web = |property: &str| {
+                profile
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .any(|(k, v)| k.starts_with("webContentStyles[") && v == property)
+            };
+            assert!(web("background: transparent !important"));
+            assert!(web("flex: 0 1 44% !important"));
+            assert!(web("border-radius: 15px !important"));
+            assert!(!web("display: none !important"));
         }
     }
 
