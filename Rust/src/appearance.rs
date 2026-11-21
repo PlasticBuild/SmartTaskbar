@@ -1,5 +1,6 @@
 use crate::{
     desktop::Monitor,
+    integrations::search,
     settings::{Alignment, MediaSide, PROVIDERS, Settings, Zone},
     updates,
 };
@@ -29,9 +30,6 @@ use windows_sys::Win32::{
 #[path = "appearance/preview.rs"]
 mod preview;
 use preview::Paint;
-#[path = "appearance/web_search.rs"]
-pub(crate) mod web_search;
-
 const LAYOUT: u16 = 101;
 const ALIGN: u16 = 102;
 const RADIUS: u16 = 103;
@@ -41,8 +39,6 @@ const PRESS: u16 = 106;
 const ZONE: u16 = 107;
 const MOTION: u16 = 108;
 const SIGN_IN: u16 = 109;
-const SEARCH: u16 = 110;
-const PROVIDER: u16 = 111;
 const FULLSCREEN: u16 = 112;
 const MENU: u16 = 113;
 const APPLY: u16 = 114;
@@ -58,14 +54,15 @@ const TABS: u16 = 123;
 const CHECK_UPDATES: u16 = 124;
 const RELEASES: u16 = 125;
 const REPOSITORY: u16 = 126;
-const WEB_QUERY: u16 = 127;
-const WEB_OPEN: u16 = 128;
-const MATCH_MENU_WIDTH: u16 = 129;
-const OPEN_START: u16 = 130;
+const MATCH_MENU_WIDTH: u16 = 127;
+const REDIRECT: u16 = 128;
+const REDIRECT_PROVIDER: u16 = 129;
+const REMOVE_REDIRECT: u16 = 130;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
 const UPDATE_TIMER: usize = 3;
 const ENGINE_TIMER: usize = 4;
+const REDIRECT_TIMER: usize = 5;
 const LABEL: u16 = 1000;
 const HEADER_HEIGHT: i32 = 100;
 const TBM_GETPOS: u32 = WM_USER;
@@ -81,9 +78,8 @@ const LABELS: &[(u16, &str)] = &[
     (ZONE, "Activation &zone"),
     (OUTSIDE, "Outside edge &delay"),
     (SHARED, "Shared edge de&lay"),
-    (PROVIDER, "Search pro&vider"),
     (MEDIA_SIDE, "Media player &side"),
-    (WEB_QUERY, "&Search query"),
+    (REDIRECT_PROVIDER, "Redirect search provider"),
 ];
 
 fn wide(s: &str) -> Vec<u16> {
@@ -118,7 +114,6 @@ struct Page {
 enum Tab {
     Appearance,
     Updates,
-    WebSearch,
 }
 
 impl Page {
@@ -130,13 +125,13 @@ impl Page {
             let left = usable - right - 20;
             (
                 Box2::at(inset, 102, left, (height - 175).clamp(360, 610)),
-                Box2::at(inset + left + 20, 102, right, 850),
+                Box2::at(inset + left + 20, 102, right, 900),
             )
         } else {
             let h = (usable * 53 / 100).clamp(215, 340);
             (
                 Box2::at(inset, 102, usable, h),
-                Box2::at(inset, 102 + h + 14, usable, 850),
+                Box2::at(inset, 102 + h + 14, usable, 900),
             )
         };
         Self {
@@ -167,10 +162,11 @@ impl Page {
             SHARED => (585, 25),
             MOTION => (617, 23),
             SIGN_IN => (643, 23),
-            SEARCH => (669, 23),
-            PROVIDER => (716, 25),
-            MEDIA => (752, 23),
-            MEDIA_SIDE => (798, 25),
+            MEDIA => (669, 23),
+            MEDIA_SIDE => (715, 25),
+            REDIRECT => (759, 23),
+            REDIRECT_PROVIDER => (805, 25),
+            REMOVE_REDIRECT => (845, 31),
             FULLSCREEN => {
                 return Box2::at(
                     self.preview.x + 13,
@@ -202,16 +198,6 @@ impl Page {
             CHECK_UPDATES => return Box2::at(self.preview.x + 14, 235, 118, 32),
             RELEASES => return Box2::at(self.preview.x + 140, 235, 116, 32),
             REPOSITORY => return Box2::at(self.preview.x + 14, 277, 148, 32),
-            WEB_QUERY => {
-                return Box2::at(
-                    self.preview.x + 14,
-                    204,
-                    self.width - 2 * self.preview.x - 28,
-                    31,
-                );
-            }
-            WEB_OPEN => return Box2::at(self.preview.x + 14, 250, 104, 31),
-            OPEN_START => return Box2::at(self.preview.x + 126, 250, 175, 31),
             _ => return Box2::default(),
         };
         Box2::at(x, r.y + row + 10, w, height)
@@ -255,7 +241,6 @@ struct State {
     path: PathBuf,
     old: Settings,
     draft: Settings,
-    choices: Vec<String>,
     page: Page,
     scroll: i32,
     scroll_max: i32,
@@ -274,7 +259,8 @@ struct State {
     update_job: Option<mpsc::Receiver<Result<updates::Status, String>>>,
     update_status: String,
     update_available: bool,
-    web_status: &'static str,
+    redirect_installed: bool,
+    redirect_removal: Option<mpsc::Receiver<Result<(), String>>>,
 }
 
 struct DpiContext(DPI_AWARENESS_CONTEXT);
@@ -312,10 +298,6 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
         }
     };
     let saved = Settings::load(settings_path)?;
-    let mut choices: Vec<_> = PROVIDERS.iter().map(|p| p.to_string()).collect();
-    if !choices.contains(&saved.web_engine) {
-        choices.push(saved.web_engine.clone());
-    }
     unsafe {
         let _dpi = DpiContext(SetThreadDpiAwarenessContext(
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -344,7 +326,6 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             path: settings_path.to_owned(),
             old: saved.clone(),
             draft: saved,
-            choices,
             page: Page::layout(1000, 640),
             scroll: 0,
             scroll_max: 0,
@@ -366,7 +347,8 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             update_job: None,
             update_status: String::new(),
             update_available: false,
-            web_status: "",
+            redirect_installed: search::installed(settings_path),
+            redirect_removal: None,
         });
         let mut area: RECT = mem::zeroed();
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut area as *mut _ as _, 0);
@@ -400,16 +382,6 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
                 break;
             }
             let prior = GetFocus();
-            if state.tab == Tab::WebSearch
-                && msg.message == WM_KEYDOWN
-                && msg.wParam == usize::from(VK_RETURN)
-                && prior == GetDlgItem(hwnd, WEB_QUERY.into())
-            {
-                if msg.lParam & (1 << 30) == 0 {
-                    search_web(hwnd, &mut *state);
-                }
-                continue;
-            }
             if IsDialogMessageW(hwnd, &msg) == 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -417,7 +389,8 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             let current = GetFocus();
             if msg.message == WM_KEYDOWN && current != prior && IsChild(hwnd, current) != 0 {
                 let id = GetDlgCtrlID(current) as u16;
-                if (LAYOUT..=SHARED).contains(&id)
+                if ((LAYOUT..=SHARED).contains(&id)
+                    || (MATCH_MENU_WIDTH..=REMOVE_REDIRECT).contains(&id))
                     && !matches!(id, ENGINE | APPLY)
                     && state.tab == Tab::Appearance
                 {
@@ -538,33 +511,27 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_COMMAND if (*ptr).ready => {
                 let id = (wp & 0xffff) as u16;
                 let note = ((wp >> 16) & 0xffff) as u32;
-                let web_status = (*ptr).web_status;
-                if id == WEB_QUERY && note == EN_CHANGE && !web_status.is_empty() {
-                    (*ptr).web_status = "";
-                    redraw(hwnd);
-                }
                 if note == CBN_SELCHANGE {
                     if id == MONITOR {
                         select_monitor(hwnd, ptr);
                     } else if matches!(
                         id,
-                        LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE | OUTSIDE | SHARED
+                        LAYOUT | ALIGN | ZONE | MEDIA_SIDE | OUTSIDE | SHARED | REDIRECT_PROVIDER
                     ) {
                         read_controls(hwnd, ptr);
                     }
                 } else if note == BN_CLICKED {
                     match id {
-                        MATCH_MENU_WIDTH | MOTION | SIGN_IN | SEARCH | MEDIA => {
+                        MATCH_MENU_WIDTH | MOTION | SIGN_IN | MEDIA | REDIRECT => {
                             read_controls(hwnd, ptr)
                         }
+                        REMOVE_REDIRECT => remove_redirect(hwnd, ptr),
                         MENU | FULLSCREEN => toggle_preview(hwnd, ptr, id),
                         APPLY => save(hwnd, ptr),
                         ENGINE => engine(hwnd, ptr),
                         OVERRIDE => change_override(hwnd, ptr),
                         CHECK_UPDATES => check_updates(hwnd, ptr),
                         RELEASES | REPOSITORY => open_github(hwnd, ptr, id),
-                        WEB_OPEN => search_web(hwnd, ptr),
-                        OPEN_START => crate::start_web::launch_start(),
                         _ => {}
                     }
                 }
@@ -643,6 +610,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 sync_engine(hwnd, ptr);
                 0
             }
+            WM_TIMER if wp == REDIRECT_TIMER => {
+                finish_redirect_removal(hwnd, ptr);
+                0
+            }
             WM_CLOSE => {
                 if (*ptr).draft == (*ptr).old
                     || MessageBoxW(
@@ -689,8 +660,9 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         let mut failed = false;
         for id in (LAYOUT..=TRANSPARENCY)
             .chain([ICON_SIZE])
-            .chain(HOVER..=MEDIA_SIDE)
-            .chain(MONITOR..=OPEN_START)
+            .chain(HOVER..=SIGN_IN)
+            .chain(FULLSCREEN..=MEDIA_SIDE)
+            .chain(MONITOR..=REMOVE_REDIRECT)
         {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
@@ -710,7 +682,8 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 failed |= label.is_null();
             }
             let (class, text, style) = match id {
-                LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED => (
+                LAYOUT | ALIGN | ZONE | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED
+                | REDIRECT_PROVIDER => (
                     "COMBOBOX",
                     match id {
                         LAYOUT => "Layout",
@@ -720,7 +693,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                         OUTSIDE => "Outside edge delay",
                         SHARED => "Shared edge delay",
                         MEDIA_SIDE => "Media player side",
-                        _ => "Search provider",
+                        _ => "Redirect search provider",
                     },
                     (CBS_DROPDOWNLIST | CBS_HASSTRINGS) as u32 | WS_VSCROLL,
                 ),
@@ -742,7 +715,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 ),
                 MATCH_MENU_WIDTH => (
                     "BUTTON",
-                    "Match Start and Search to island width",
+                    "Match Start to island width",
                     BS_AUTOCHECKBOX as u32,
                 ),
                 MEDIA => (
@@ -750,14 +723,11 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                     "Show taskbar media player",
                     BS_AUTOCHECKBOX as u32,
                 ),
+                REDIRECT => ("BUTTON", "Enable MSEdgeRedirect", BS_AUTOCHECKBOX as u32),
+                REMOVE_REDIRECT => ("BUTTON", "Uninstall MSEdgeRedirect", BS_PUSHBUTTON as u32),
                 SIGN_IN => (
                     "BUTTON",
                     "Start SmartTaskbar when I sign in",
-                    BS_AUTOCHECKBOX as u32,
-                ),
-                SEARCH => (
-                    "BUTTON",
-                    "Redirect Start web searches",
                     BS_AUTOCHECKBOX as u32,
                 ),
                 OVERRIDE => (
@@ -769,9 +739,6 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 CHECK_UPDATES => ("BUTTON", "Check again", BS_PUSHBUTTON as u32),
                 RELEASES => ("BUTTON", "View releases", BS_PUSHBUTTON as u32),
                 REPOSITORY => ("BUTTON", "Open GitHub repository", BS_PUSHBUTTON as u32),
-                WEB_QUERY => ("EDIT", "", WS_BORDER | ES_AUTOHSCROLL as u32),
-                WEB_OPEN => ("BUTTON", "Search", BS_PUSHBUTTON as u32),
-                OPEN_START => ("BUTTON", "Open SmartTaskbar Start", BS_PUSHBUTTON as u32),
                 FULLSCREEN => ("BUTTON", "Go fullscreen", BS_PUSHBUTTON as u32),
                 MENU => ("BUTTON", "Open menu", BS_PUSHBUTTON as u32),
                 ENGINE => (
@@ -834,19 +801,18 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
             &["Entire edge", "Center half", "Taskbar width"],
             0,
         );
-        let choices: Vec<_> = s.choices.iter().map(String::as_str).collect();
         add(
             MEDIA_SIDE as i32,
             &["Left", "Right"],
             usize::from(s.draft.media_side == MediaSide::Right),
         );
         add(
-            PROVIDER as i32,
-            &choices,
-            s.choices
+            REDIRECT_PROVIDER as i32,
+            PROVIDERS,
+            PROVIDERS
                 .iter()
-                .position(|v| *v == s.draft.web_engine)
-                .unwrap_or_default(),
+                .position(|provider| *provider == s.draft.web_engine)
+                .unwrap_or(0),
         );
         SendDlgItemMessageW(
             hwnd,
@@ -881,10 +847,10 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
             SendDlgItemMessageW(hwnd, id as i32, TBM_SETPOS, 1, value as isize);
         }
         for (id, on) in [
-            (MATCH_MENU_WIDTH, s.draft.match_start_search_width),
+            (MATCH_MENU_WIDTH, s.draft.match_start_width),
+            (REDIRECT, s.redirect_installed && s.draft.search_redirect),
             (MOTION, s.draft.animate),
             (SIGN_IN, s.draft.start_at_sign_in),
-            (SEARCH, s.draft.search_redirect),
             (MEDIA, s.draft.media_player),
         ] {
             SendDlgItemMessageW(hwnd, id as i32, BM_SETCHECK, on as usize, 0);
@@ -893,8 +859,6 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         (*state).paint.theme(hwnd);
         tab_item(hwnd, TCM_INSERTITEMW, 0, "Appearance");
         tab_item(hwnd, TCM_INSERTITEMW, 1, "Updates");
-        tab_item(hwnd, TCM_INSERTITEMW, 2, "Web Search");
-        SendDlgItemMessageW(hwnd, WEB_QUERY.into(), EM_SETLIMITTEXT, 512, 0);
         style_controls(hwnd, state);
         (*state).ready = true;
         monitor_controls(hwnd, state);
@@ -920,7 +884,7 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=OPEN_START {
+        for id in LAYOUT..=REMOVE_REDIRECT {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
@@ -970,8 +934,9 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
             tab,
             ..
         } = *state;
-        let mut placements = Vec::with_capacity((OPEN_START - LAYOUT + 1) as usize + LABELS.len());
-        for id in LAYOUT..=OPEN_START {
+        let mut placements =
+            Vec::with_capacity((REMOVE_REDIRECT - LAYOUT + 1) as usize + LABELS.len());
+        for id in LAYOUT..=REMOVE_REDIRECT {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
             let fixed = matches!(id, ENGINE | TABS | APPLY);
@@ -979,7 +944,6 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
             let show = match id {
                 ENGINE | TABS => true,
                 CHECK_UPDATES | RELEASES | REPOSITORY => tab == Tab::Updates && y > HEADER_HEIGHT,
-                WEB_QUERY | WEB_OPEN | OPEN_START => tab == Tab::WebSearch && y > HEADER_HEIGHT,
                 _ => tab == Tab::Appearance && (fixed || y > HEADER_HEIGHT),
             };
             let control = GetDlgItem(hwnd, id as i32);
@@ -993,7 +957,7 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
             }
             let height = if matches!(
                 id,
-                LAYOUT | ALIGN | ZONE | PROVIDER | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED
+                LAYOUT | ALIGN | ZONE | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED | REDIRECT_PROVIDER
             ) {
                 180
             } else {
@@ -1191,7 +1155,7 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
         let check = |id| SendDlgItemMessageW(hwnd, id, BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
         let s = &mut *state;
         s.draft.island = sel(LAYOUT as i32) == 1;
-        s.draft.match_start_search_width = check(MATCH_MENU_WIDTH as i32);
+        s.draft.match_start_width = check(MATCH_MENU_WIDTH as i32);
         s.draft.alignment = match sel(ALIGN as i32) {
             0 => Alignment::Left,
             2 => Alignment::Right,
@@ -1231,16 +1195,18 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
         s.draft.click_depth = slider(PRESS as i32);
         s.draft.animate = check(MOTION as i32);
         s.draft.start_at_sign_in = check(SIGN_IN as i32);
-        s.draft.search_redirect = check(SEARCH as i32);
+        if s.redirect_removal.is_none() {
+            s.draft.search_redirect = s.redirect_installed && check(REDIRECT as i32);
+            if let Some(provider) = PROVIDERS.get(sel(REDIRECT_PROVIDER as i32) as usize) {
+                s.draft.web_engine = (*provider).to_owned();
+            }
+        }
         s.draft.media_player = check(MEDIA as i32);
         s.draft.media_side = if sel(MEDIA_SIDE as i32) == 0 {
             MediaSide::Left
         } else {
             MediaSide::Right
         };
-        if let Some(provider) = s.choices.get(sel(PROVIDER as i32) as usize) {
-            s.draft.web_engine = provider.clone();
-        }
         s.status.clear();
         reflect(hwnd, state);
         update_animation(hwnd, state);
@@ -1258,12 +1224,77 @@ unsafe fn reflect(hwnd: HWND, state: *mut State) {
             GetDlgItem(hwnd, MEDIA_SIDE as i32),
             s.draft.media_player as i32,
         );
-        EnableWindow(
-            GetDlgItem(hwnd, PROVIDER as i32),
-            s.draft.search_redirect as i32,
-        );
-        EnableWindow(GetDlgItem(hwnd, APPLY as i32), (s.draft != s.old) as i32);
+        let redirect_available = s.redirect_installed && s.redirect_removal.is_none();
+        for (id, enabled) in [
+            (REDIRECT, redirect_available),
+            (
+                REDIRECT_PROVIDER,
+                redirect_available && s.draft.search_redirect,
+            ),
+            (REMOVE_REDIRECT, redirect_available),
+            (APPLY, s.redirect_removal.is_none() && s.draft != s.old),
+        ] {
+            EnableWindow(GetDlgItem(hwnd, id as i32), enabled as i32);
+        }
+        let caption = if s.redirect_installed {
+            "Enable MSEdgeRedirect"
+        } else {
+            "MSEdgeRedirect (install via Setup)"
+        };
+        SetWindowTextW(GetDlgItem(hwnd, REDIRECT as i32), wide(caption).as_ptr());
         redraw(hwnd);
+    }
+}
+
+unsafe fn remove_redirect(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        if !s.redirect_installed || s.redirect_removal.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let path = s.path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(search::uninstall(&path));
+        });
+        s.redirect_removal = Some(rx);
+        s.status = "Uninstalling MSEdgeRedirect.".into();
+        SetTimer(hwnd, REDIRECT_TIMER, 125, None);
+        reflect(hwnd, state);
+    }
+}
+
+unsafe fn finish_redirect_removal(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let s = &mut *state;
+        let Some(job) = &s.redirect_removal else {
+            return;
+        };
+        let result = match job.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("MSEdgeRedirect removal was interrupted.".into())
+            }
+        };
+        KillTimer(hwnd, REDIRECT_TIMER);
+        s.redirect_removal = None;
+        s.redirect_installed = search::installed(&s.path);
+        if let Ok(saved) = Settings::load(&s.path) {
+            s.old.search_redirect = saved.search_redirect;
+            s.draft.search_redirect = saved.search_redirect;
+            SendDlgItemMessageW(
+                hwnd,
+                REDIRECT as i32,
+                BM_SETCHECK,
+                (s.redirect_installed && saved.search_redirect) as usize,
+                0,
+            );
+        }
+        s.status = result
+            .err()
+            .unwrap_or_else(|| "MSEdgeRedirect uninstalled.".into());
+        reflect(hwnd, state);
     }
 }
 unsafe fn save(hwnd: HWND, state: *mut State) {
@@ -1372,7 +1403,6 @@ unsafe fn switch_tab(hwnd: HWND, state: *mut State) {
         let selected = match SendDlgItemMessageW(hwnd, TABS as i32, TCM_GETCURSEL, 0, 0) {
             0 => Tab::Appearance,
             1 => Tab::Updates,
-            2 => Tab::WebSearch,
             _ => return,
         };
         if selected == s.tab {
@@ -1397,23 +1427,6 @@ unsafe fn switch_tab(hwnd: HWND, state: *mut State) {
             update_animation(hwnd, state);
         }
         layout(hwnd, state);
-    }
-}
-
-unsafe fn search_web(hwnd: HWND, state: *mut State) {
-    unsafe {
-        let input = GetDlgItem(hwnd, WEB_QUERY.into());
-        let mut text = [0; 513];
-        let length = GetWindowTextW(input, text.as_mut_ptr(), text.len() as i32);
-        let text = String::from_utf16_lossy(&text[..length as usize]);
-        let query = text.trim();
-        (*state).web_status = if query.is_empty() {
-            SetFocus(input);
-            "Enter a search query."
-        } else {
-            web_search::open(query).err().unwrap_or_default()
-        };
-        redraw(hwnd);
     }
 }
 

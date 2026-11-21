@@ -11,10 +11,66 @@ use std::{
 };
 use windows_sys::Win32::System::JobObjects::*;
 
-const RELEASE: &str =
-    "https://github.com/rcmaehl/MSEdgeRedirect/releases/download/0.8.0.0/MSEdgeRedirect.exe";
 const CHECKSUM: &str = "f3c4f9de4553e9f88b71ce189d3d1234fa560d247443d4c2d417e3b6461cd36a";
 const HIDDEN: u32 = 0x08000000;
+
+fn folder(base: &Path) -> PathBuf {
+    base.join("optional").join("search")
+}
+
+pub(crate) fn installed(config: &Path) -> bool {
+    config
+        .parent()
+        .is_some_and(|base| folder(base).join("MSEdgeRedirect.exe").is_file())
+}
+
+pub(crate) fn uninstall(config: &Path) -> Result<(), String> {
+    if !installed(config) {
+        return Ok(());
+    }
+    let base = config.parent().ok_or("Settings directory is missing.")?;
+    let base = fs::canonicalize(base).map_err(|e| e.to_string())?;
+    let folder = folder(&base);
+    if fs::canonicalize(&folder).map_err(|e| e.to_string())? != folder {
+        return Err("The MSEdgeRedirect folder is outside this installation.".into());
+    }
+    let exe = folder.join("MSEdgeRedirect.exe");
+    if fs::canonicalize(&exe).map_err(|e| e.to_string())? != exe {
+        return Err("The helper file does not belong to this installation.".into());
+    }
+    verify(&exe)?;
+    let old = Settings::load(config)?;
+    if old.search_redirect {
+        let mut next = old.clone();
+        next.search_redirect = false;
+        crate::apply_settings(config, &old, &next)?;
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match fs::remove_file(&exe) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e)
+                if matches!(e.raw_os_error(), Some(5 | 32))
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(format!("Could not remove MSEdgeRedirect: {e}")),
+        }
+    }
+    for file in [
+        "LICENSE-MSEdgeRedirect.txt",
+        "MSEdgeRedirect-0.8.0.0-source.tar.gz",
+    ] {
+        match fs::remove_file(folder.join(file)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("Could not remove the MSEdgeRedirect files: {e}")),
+        }
+    }
+    Ok(())
+}
 
 pub struct Redirect {
     folder: PathBuf,
@@ -24,7 +80,7 @@ pub struct Redirect {
 impl Redirect {
     pub fn new(base: &Path) -> Self {
         Self {
-            folder: base.join("optional").join("search"),
+            folder: folder(base),
             child: None,
             job: None,
         }
@@ -40,7 +96,7 @@ impl Redirect {
     }
     pub fn configure(&mut self, settings: &Settings) -> Result<(), String> {
         self.stop();
-        if !settings.search_redirect {
+        if !settings.search_redirect || !self.folder.join("MSEdgeRedirect.exe").is_file() {
             return Ok(());
         }
         settings.validate()?;
@@ -78,39 +134,7 @@ impl Redirect {
                 );
             }
         }
-        fs::create_dir_all(&self.folder).map_err(|e| e.to_string())?;
         let exe = self.folder.join("MSEdgeRedirect.exe");
-        if !exe.exists() {
-            let download = self.folder.join("verified-download.tmp");
-            let status = Command::new(sys.join("curl.exe"))
-                .args([
-                    "--fail",
-                    "--silent",
-                    "--show-error",
-                    "--location",
-                    "--proto",
-                    "=https",
-                    "--proto-redir",
-                    "=https",
-                    "--max-time",
-                    "60",
-                    "--output",
-                ])
-                .arg(&download)
-                .arg(RELEASE)
-                .creation_flags(HIDDEN)
-                .status()
-                .map_err(|e| e.to_string())?;
-            if !status.success() {
-                let _ = fs::remove_file(download);
-                return Err("The optional search helper download failed.".into());
-            }
-            if let Err(e) = verify(&download) {
-                let _ = fs::remove_file(download);
-                return Err(e);
-            }
-            fs::rename(download, &exe).map_err(|e| e.to_string())?;
-        }
         verify(&exe)?;
         let convert = if settings.web_engine == "Bing" { 0 } else { 1 };
         let ini = format!(

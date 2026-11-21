@@ -150,12 +150,7 @@ pub fn configure_packaged_style() -> Result<(), String> {
     ];
     for dir in fs::read_dir(windows.join("SystemApps")).map_err(|e| e.to_string())? {
         let dir = dir.map_err(|e| e.to_string())?.path();
-        for name in [
-            "StartMenuExperienceHost.exe",
-            "SearchHost.exe",
-            "SearchApp.exe",
-            "ShellExperienceHost.exe",
-        ] {
+        for name in ["StartMenuExperienceHost.exe", "ShellExperienceHost.exe"] {
             let executable = dir.join(name);
             if executable.is_file() {
                 includes.push(executable);
@@ -195,7 +190,7 @@ pub fn configure_packaged_style() -> Result<(), String> {
 pub fn verify_packaged_style(root: &Path) -> Result<(), String> {
     let windows = PathBuf::from(std::env::var_os("SystemRoot").ok_or("Missing Windows directory")?);
     let settings = run_cli(root, &["app", "settings", "get"], None)?;
-    if !scope_ok(&settings, &windows) {
+    if !scope_ok(&settings, &windows, false) {
         return Err(
             "The bundled styling host does not have the required Windows shell scope.".into(),
         );
@@ -229,6 +224,7 @@ pub fn stop_packaged_style(config: &Path) -> Result<(), String> {
     if !scope_ok(
         &run_cli(&root, &["app", "settings", "get"], None)?,
         &windows,
+        true, // An older packaged host can still be running during an upgrade.
     ) {
         return Err("The running styling host is outside SmartTaskbar's shell scope.".into());
     }
@@ -287,7 +283,7 @@ fn process_paths(name: &str) -> Result<Vec<PathBuf>, String> {
     Ok(result)
 }
 
-fn scope_ok(value: &Value, windows: &Path) -> bool {
+fn scope_ok(value: &Value, windows: &Path, allow_legacy_search: bool) -> bool {
     let config = &value["settings"];
     let engine = &config["engine"];
     let shell = windows
@@ -316,15 +312,11 @@ fn scope_ok(value: &Value, windows: &Path) -> bool {
                 || p == &system
                 || (p.starts_with(&dir)
                     && !p[dir.len()..].split('\\').any(|s| s == "..")
-                    && matches!(
-                        Path::new(p).file_name().and_then(OsStr::to_str),
-                        Some(
-                            "startmenuexperiencehost.exe"
-                                | "searchhost.exe"
-                                | "searchapp.exe"
-                                | "shellexperiencehost.exe"
-                        )
-                    ))
+                    && match Path::new(p).file_name().and_then(OsStr::to_str) {
+                        Some("startmenuexperiencehost.exe" | "shellexperiencehost.exe") => true,
+                        Some("searchhost.exe" | "searchapp.exe") => allow_legacy_search,
+                        _ => false,
+                    })
         })
         && engine["exclude"] == serde_json::json!(["*"])
         && [
@@ -367,6 +359,7 @@ impl Host {
         if !scope_ok(
             &run_cli(&root, &["app", "settings", "get"], None)?,
             &windows,
+            false,
         ) {
             return Err(
                 "The native styling host is outside the configured Explorer and shell menu scope."
@@ -578,21 +571,29 @@ mod tests {
     use super::*;
     fn config() -> Value {
         serde_json::json!({"settings":{"safeMode":false,"engine":{
-            "exclude":["*"], "include":[r"C:\Windows\explorer.exe", r"C:\Windows\SystemApps\SearchPackage\SearchHost.exe"],
+            "exclude":["*"], "include":[r"C:\Windows\explorer.exe", r"C:\Windows\SystemApps\StartPackage\StartMenuExperienceHost.exe"],
             "injectIntoCriticalProcesses":false, "injectIntoIncompatiblePrograms":false, "injectIntoGames":false
         }}})
     }
     #[test]
     fn accepts_the_dedicated_shell_host() {
-        assert!(scope_ok(&config(), Path::new(r"C:\Windows")));
+        assert!(scope_ok(&config(), Path::new(r"C:\Windows"), false));
+    }
+    #[test]
+    fn legacy_search_scope_is_only_allowed_for_shutdown() {
+        let mut v = config();
+        v["settings"]["engine"]["include"][1] =
+            serde_json::json!(r"C:\Windows\SystemApps\SearchPackage\SearchHost.exe");
+        assert!(!scope_ok(&v, Path::new(r"C:\Windows"), false));
+        assert!(scope_ok(&v, Path::new(r"C:\Windows"), true));
     }
     #[test]
     fn leaves_foreign_apps_and_unexpected_installs_alone() {
         let mut v = config();
         v["settings"]["engine"]["include"][1] = serde_json::json!(r"D:\Apps\SearchHost.exe");
-        assert!(!scope_ok(&v, Path::new(r"C:\Windows")));
+        assert!(!scope_ok(&v, Path::new(r"C:\Windows"), true));
         v = config();
         v["settings"]["engine"]["exclude"] = serde_json::json!([]);
-        assert!(!scope_ok(&v, Path::new(r"C:\Windows")));
+        assert!(!scope_ok(&v, Path::new(r"C:\Windows"), false));
     }
 }

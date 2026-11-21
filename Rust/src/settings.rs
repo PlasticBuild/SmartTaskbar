@@ -50,7 +50,8 @@ pub enum MediaSide {
 #[serde(default)]
 pub struct Settings {
     pub island: bool,
-    pub match_start_search_width: bool,
+    #[serde(alias = "match_start_search_width")]
+    pub match_start_width: bool,
     pub radius: u8,
     pub transparency: u8,
     pub icon_size: u8,
@@ -73,7 +74,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             island: true,
-            match_start_search_width: false,
+            match_start_width: false,
             radius: 4,
             transparency: 65,
             icon_size: 100,
@@ -110,7 +111,7 @@ impl Settings {
 
     pub fn same_shell_style(&self, other: &Self) -> bool {
         self.island == other.island
-            && self.match_start_search_width == other.match_start_search_width
+            && self.match_start_width == other.match_start_width
             && self.radius == other.radius
             && self.transparency == other.transparency
             && self.icon_size == other.icon_size
@@ -249,8 +250,8 @@ mod tests {
     #[test]
     fn missing_features_default_to_off() {
         let s: Settings = serde_json::from_str(r#"{"radius":8}"#).unwrap();
-        assert!(!s.search_redirect && !s.start_at_sign_in && !s.media_player);
-        assert!(!s.match_start_search_width);
+        assert!(!s.start_at_sign_in && !s.media_player && !s.search_redirect);
+        assert!(!s.match_start_width);
         assert_eq!(s.media_side, MediaSide::Right);
         assert_eq!(s.icon_size, 100);
         assert_eq!(s.radius, 8);
@@ -293,7 +294,7 @@ mod tests {
         s.save(&p).unwrap();
         let next = Settings {
             alignment: Alignment::Right,
-            match_start_search_width: true,
+            match_start_width: true,
             animate: false,
             media_player: true,
             media_side: MediaSide::Left,

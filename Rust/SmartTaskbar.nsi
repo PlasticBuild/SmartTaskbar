@@ -228,11 +228,20 @@ Section "SmartTaskbar (required)" Application
         CreateShortcut "$SMPROGRAMS\SmartTaskbar.lnk" "$INSTDIR\${APP}" "--settings" "$INSTDIR\${APP}"
         Delete "$SMPROGRAMS\SmartTaskbar Rust.lnk"
         Delete "$DESKTOP\SmartTaskbar Rust.lnk"
-        Exec '"$INSTDIR\${APP}" --run'
+SectionEnd
+
+Section /o "MSEdgeRedirect (optional)" SearchRedirect
+    SetOutPath "$INSTDIR\optional\search"
+    File "${PAYLOAD}\SearchRedirect\*"
 SectionEnd
 
 Section "Desktop shortcut" DesktopShortcut
     CreateShortcut "$DESKTOP\SmartTaskbar.lnk" "$INSTDIR\${APP}" "--settings" "$INSTDIR\${APP}"
+SectionEnd
+
+Section -StartController
+    SetOutPath "$INSTDIR"
+    Exec '"$INSTDIR\${APP}" --run'
 SectionEnd
 
 Function un.onInit
@@ -253,6 +262,7 @@ Section "Uninstall"
         SetErrorLevel 2
         Abort
     remove_app:
+        ExecWait '"$INSTDIR\${APP}" --uninstall-redirect' $0
         ReadRegStr $0 HKCU "${RUN}" "${LEGACY_START}"
         StrCmp $0 '"$INSTDIR\${APP}" --run --config "$INSTDIR\settings.json"' 0 +2
         DeleteRegValue HKCU "${RUN}" "${LEGACY_START}"

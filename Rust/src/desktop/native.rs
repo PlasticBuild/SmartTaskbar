@@ -370,7 +370,6 @@ pub(super) fn hovered_thumbnail(point: Point, shell: u32) -> Option<Rect> {
 
 fn shell_surface(name: &str, class: &str, has_owner: bool) -> bool {
     match name {
-        "smarttaskbar-rs.exe" => class == "SmartTaskbar.Rust.WebSearchPane",
         "startmenuexperiencehost.exe" | "searchhost.exe" | "searchapp.exe" => matches!(
             class,
             "Windows.UI.Core.CoreWindow"
@@ -434,7 +433,6 @@ pub(super) struct Scene {
 fn panel_kind(name: &str, class: &str, bounds: Rect, display: Rect, dpi: u32) -> Option<MenuKind> {
     match (name, class) {
         ("startmenuexperiencehost.exe", _) => Some(MenuKind::Start),
-        ("searchhost.exe" | "searchapp.exe", _) => Some(MenuKind::Search),
         (_, "ControlCenterWindow") => Some(MenuKind::QuickSettings),
         (_, "ClockFlyoutWindow" | "NotificationCenterWindow") => Some(MenuKind::Notifications),
         (_, "NotifyIconOverflowWindow" | "TopLevelWindowForOverflowXamlIsland") => {

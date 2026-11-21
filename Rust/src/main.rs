@@ -9,7 +9,6 @@ mod migrate;
 mod policy;
 mod profiles;
 mod settings;
-mod start_web;
 mod updates;
 
 use settings::Settings;
@@ -60,8 +59,6 @@ impl Drop for SingleInstance {
 #[derive(Debug, PartialEq)]
 enum Action {
     Settings,
-    Start,
-    StartWebSearch { hwnd: usize, prefixed: bool },
     Run,
     Stop,
     Pause,
@@ -75,6 +72,7 @@ enum Action {
     ConfigureStyle,
     VerifyStyle,
     SyncStartup,
+    UninstallRedirect,
     Help,
 }
 
@@ -94,15 +92,6 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<Pat
         }
         let next = match arg.to_str() {
             Some("--settings") => Action::Settings,
-            Some("--start") => Action::Start,
-            Some("--start-web-search" | "--start-prefixed-web-search") => Action::StartWebSearch {
-                hwnd: it
-                    .next()
-                    .and_then(|value| value.to_str().and_then(|s| s.parse().ok()))
-                    .filter(|hwnd| *hwnd != 0)
-                    .ok_or("Supply the active Start Search window.")?,
-                prefixed: arg == "--start-prefixed-web-search",
-            },
             Some("--run") => Action::Run,
             Some("--stop") => Action::Stop,
             Some("--pause") => Action::Pause,
@@ -119,6 +108,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<Pat
             Some("--configure-style") => Action::ConfigureStyle,
             Some("--verify-style") => Action::VerifyStyle,
             Some("--sync-startup") => Action::SyncStartup,
+            Some("--uninstall-redirect") => Action::UninstallRedirect,
             Some("--help" | "-h") => Action::Help,
             _ => return Err(format!("Unknown argument {}", arg.to_string_lossy())),
         };
@@ -247,13 +237,22 @@ fn prepare_update(path: &Path) -> Result<(), String> {
     if csharp_running() {
         return Err("Close the previous SmartTaskbar controller before installing.".into());
     }
-    let windows = [appearance::window(), start_web::window()];
-    if windows.iter().any(|hwnd| !hwnd.is_null()) {
-        for hwnd in windows.into_iter().filter(|hwnd| !hwnd.is_null()) {
+    // Older builds may still have their separate Start window open during an upgrade.
+    let windows = || {
+        let legacy_start = unsafe {
+            FindWindowW(
+                windows_sys::w!("SmartTaskbar.Rust.WebSearchPane"),
+                std::ptr::null(),
+            )
+        };
+        [appearance::window(), legacy_start]
+    };
+    if windows().iter().any(|hwnd| !hwnd.is_null()) {
+        for hwnd in windows().into_iter().filter(|hwnd| !hwnd.is_null()) {
             unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
         }
         let deadline = Instant::now() + Duration::from_secs(8);
-        while !appearance::window().is_null() || !start_web::window().is_null() {
+        while windows().iter().any(|hwnd| !hwnd.is_null()) {
             if Instant::now() >= deadline {
                 return Err("Close SmartTaskbar Settings before continuing.".into());
             }
@@ -303,14 +302,14 @@ fn execute() -> Result<(), String> {
     }
     let path = std::path::absolute(path.unwrap_or(settings::default_path()?))
         .map_err(|e| e.to_string())?;
-    if let Action::StartWebSearch { hwnd, prefixed } = action {
-        return start_web::show(hwnd, &path, prefixed);
-    }
     if action == Action::PrepareUpdate {
         return prepare_update(&path);
     }
     if action == Action::VerifyStyle {
         return integrations::verify_packaged_style(&path.with_file_name("Windhawk"));
+    }
+    if action == Action::UninstallRedirect {
+        return integrations::search::uninstall(&path);
     }
     if action == Action::Pause {
         return pause(&path);
@@ -328,7 +327,6 @@ fn execute() -> Result<(), String> {
     let settings = Settings::load(&path)?;
     match action {
         Action::Settings => appearance::show(&path),
-        Action::Start => start_web::open_start(&path),
         Action::SyncStartup => integrations::sign_in(&path, settings.start_at_sign_in),
         Action::Inspect => {
             println!("{}", desktop::inspect()?);
@@ -362,9 +360,7 @@ fn execute() -> Result<(), String> {
 fn main() {
     if let Err(error) = execute() {
         eprintln!("{error}");
-        if env::args_os().len() == 1
-            || env::args_os().any(|v| v == "--settings" || v == "--start-web-search")
-        {
+        if env::args_os().len() == 1 || env::args_os().any(|v| v == "--settings") {
             unsafe {
                 MessageBoxW(
                     std::ptr::null_mut(),

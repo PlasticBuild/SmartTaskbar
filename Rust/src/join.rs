@@ -21,7 +21,6 @@ use windows_sys::Win32::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuKind {
     Start,
-    Search,
     QuickSettings,
     Notifications,
     Overflow,
@@ -51,7 +50,7 @@ fn gap(bar: NativeBar, island: Rect, panel: Panel, dpi: u32) -> Option<Rect> {
     let gutter = px(12, dpi);
     let rect = match bar.edge {
         Edge::Bottom => {
-            // The visible face occupies only part of the transparent Start/Search
+            // The visible face occupies only part of the transparent Start
             // host. Notification and Quick Settings have known, right-aligned faces.
             let (left, right, inset) = match panel.kind {
                 MenuKind::Start => {
@@ -62,7 +61,6 @@ fn gap(bar: NativeBar, island: Rect, panel: Panel, dpi: u32) -> Option<Rect> {
                         gutter,
                     )
                 }
-                MenuKind::Search => (face.left.max(host.left), face.right.min(host.right), gutter),
                 MenuKind::Notifications | MenuKind::QuickSettings => {
                     let width = px(
                         if panel.kind == MenuKind::Notifications {
@@ -533,9 +531,7 @@ impl Join {
         }
         let mut open = false;
         if let Some(panel) = panel {
-            if !settings.match_start_search_width
-                && matches!(panel.kind, MenuKind::Start | MenuKind::Search)
-            {
+            if !settings.match_start_width && panel.kind == MenuKind::Start {
                 self.clear();
                 return false;
             }
@@ -708,15 +704,6 @@ mod tests {
             ..wrapper
         };
         assert!(gap(bar, face, wrong, 96).is_none());
-        assert!(
-            gap(
-                bar,
-                face,
-                panel(Rect::new(-1700, -790, -120, -310), MenuKind::Search),
-                96
-            )
-            .is_none()
-        );
         assert!(gap(bar, face, panel(SCREEN, MenuKind::Start), 96).is_none());
     }
 

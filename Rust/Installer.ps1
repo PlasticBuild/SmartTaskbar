@@ -87,6 +87,36 @@ foreach ($asset in $sources) {
     Copy-Item -LiteralPath $file -Destination (Join-Path $app 'licenses')
 }
 
+$redirectCache = Join-Path $repo 'bin/toolchain/msedge-redirect'
+$redirect = Join-Path $build 'SearchRedirect'
+$null = New-Item -ItemType Directory -Force -Path $redirectCache,$redirect
+foreach ($asset in @(
+    @{
+        Name = 'MSEdgeRedirect.exe'
+        Url = 'https://github.com/rcmaehl/MSEdgeRedirect/releases/download/0.8.0.0/MSEdgeRedirect.exe'
+        Hash = 'F3C4F9DE4553E9F88B71CE189D3D1234FA560D247443D4C2D417E3B6461CD36A'
+    },
+    @{
+        Name = 'LICENSE-MSEdgeRedirect.txt'
+        Url = 'https://raw.githubusercontent.com/rcmaehl/MSEdgeRedirect/0.8.0.0/LICENSE'
+        Hash = 'E3A994D82E644B03A792A930F574002658412F62407F5FEE083F2555C5F23118'
+    },
+    @{
+        Name = 'MSEdgeRedirect-0.8.0.0-source.tar.gz'
+        Url = 'https://codeload.github.com/rcmaehl/MSEdgeRedirect/tar.gz/refs/tags/0.8.0.0'
+        Hash = '3A1727DB9D324F9218C5BC76C2E70B6C3B95F593364C7C67AF2D9152CD60B157'
+    }
+)) {
+    $file = Join-Path $redirectCache $asset.Name
+    if (!(Test-Path -LiteralPath $file)) {
+        Invoke-WebRequest -Uri $asset.Url -OutFile $file
+    }
+    if ((Get-FileHash -LiteralPath $file).Hash -ne $asset.Hash) {
+        throw "Could not verify $($asset.Name)."
+    }
+    Copy-Item -LiteralPath $file -Destination $redirect
+}
+
 $icon = Join-Path $PSScriptRoot 'assets/taskbar.ico'
 $installer = Join-Path $output 'SmartTaskbar-Setup.exe'
 $version = [regex]::Match((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -Raw), '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')

@@ -68,7 +68,7 @@ pub fn inspect() -> Result<String, String> {
         ));
     }
     if let Some(island) = primary_island() {
-        lines.push(format!("Primary bottom island uses a {} DIP Start panel shifted {} DIPs, a {} DIP tray shift, and a {} DIP Search panel with a {} DIP inset.", island.start_width, island.start_shift, island.tray_shift, island.search_width, island.search_inset));
+        lines.push(format!("Primary bottom island uses a {} DIP Start panel shifted {} DIPs and a {} DIP tray shift.", island.start_width, island.start_shift, island.tray_shift));
     }
     Ok(lines.join("\n"))
 }
@@ -86,17 +86,10 @@ fn layout(bar: Bar, face: Option<Rect>) -> Geometry {
     let start_shift = native::px_to_dip(start.left - centered_left, bar.dpi);
     let tray_shift = (policy::SIDE_INSET_DIP - native::px_to_dip(work.right - face.right, bar.dpi))
         .clamp((384 - available).min(0), 0);
-    let reclaimed =
-        (bar.display.work.bottom - bar.strip.bounds.top).clamp(0, bar.strip.bounds.height());
-    let search_inset = (native::px_to_dip(reclaimed, bar.dpi) - 18).max(0);
     Some(BottomIsland {
         start_width,
         start_shift,
         tray_shift,
-        search_width: native::px_to_dip(face.width(), bar.dpi)
-            .min(available)
-            .max(1),
-        search_inset,
     })
 }
 
@@ -107,65 +100,11 @@ pub fn primary_island() -> Geometry {
         .find_map(|bar| layout(bar, lease::current_compact(bar)))
 }
 
-pub(crate) fn start_bounds(settings: &Settings) -> Option<(Rect, i32)> {
-    let _dpi = DpiScope::enter();
-    let cursor = native::cursor();
-    let bars = native::bars();
-    let bar = bars
-        .iter()
-        .find(|bar| cursor.is_some_and(|point| bar.strip.display.contains(point)))
-        .or_else(|| bars.iter().find(|bar| bar.display.primary))?;
-    let dpi = bar.dpi as i32;
-    let px = |dip| dip * dpi / 96;
-    let face = lease::current_compact(*bar);
-    let width = face
-        .filter(|_| {
-            settings.island && settings.match_start_search_width && bar.strip.edge.horizontal()
-        })
-        .map_or(px(620), |face| face.width().clamp(px(420), px(760)));
-    let bar_rect = bar.strip.bounds;
-    let work = bar.display.work;
-    let mut area = work;
-    match bar.strip.edge {
-        Edge::Bottom => area.bottom = area.bottom.min(bar_rect.top),
-        Edge::Top => area.top = area.top.max(bar_rect.bottom),
-        Edge::Left => area.left = area.left.max(bar_rect.right),
-        Edge::Right => area.right = area.right.min(bar_rect.left),
-    }
-    let margin = px(10);
-    let area = Rect::new(
-        area.left + margin,
-        area.top + margin,
-        area.right - margin,
-        area.bottom - margin,
-    );
-    if area.is_empty() {
-        return None;
-    }
-    let width = width.min(area.width());
-    let height = px(570).min(area.height());
-    let anchor = face.unwrap_or(bar_rect);
-    let center_x = anchor.left + anchor.width() / 2;
-    let center_y = anchor.top + anchor.height() / 2;
-    let left = match bar.strip.edge {
-        Edge::Left => area.left,
-        Edge::Right => area.right - width,
-        _ => (center_x - width / 2).clamp(area.left, area.right - width),
-    };
-    let top = match bar.strip.edge {
-        Edge::Top => area.top,
-        Edge::Bottom => area.bottom - height,
-        _ => (center_y - height / 2).clamp(area.top, area.bottom - height),
-    };
-    Some((Rect::new(left, top, left + width, top + height), dpi))
-}
-
 pub fn recover() -> Result<(), String> {
     rescue::recover()
 }
 const STOP_NAME: &str = r"Local\SmartTaskbar.Rust.Stop";
 const HOTKEY: i32 = 0x0371;
-const START_HOTKEY: i32 = 0x0372;
 
 pub fn request_stop() -> Result<(), String> {
     let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, native::wide(STOP_NAME).as_ptr()) };
@@ -280,10 +219,6 @@ unsafe extern "system" fn change(
     }
 }
 
-pub(crate) fn search_field_changed() {
-    DIRTY.store(true, Ordering::Relaxed);
-}
-
 struct Notifications {
     stop: HANDLE,
     config: HANDLE,
@@ -307,14 +242,6 @@ impl Notifications {
         {
             unsafe { CloseHandle(stop) };
             return Err("Ctrl+Alt+Shift+T is in use. The taskbar engine could not register its restore shortcut.".into());
-        }
-        unsafe {
-            RegisterHotKey(
-                null_mut(),
-                START_HOTKEY,
-                MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT,
-                u32::from(b'S'),
-            );
         }
         let mut hooks = Vec::new();
         for (from, to) in [
@@ -395,10 +322,6 @@ impl Notifications {
             {
                 return Ok(false);
             }
-            if msg.message == WM_HOTKEY && msg.wParam == START_HOTKEY as usize {
-                crate::start_web::launch_start();
-                continue;
-            }
             if msg.hwnd.is_null() && msg.message == media::SESSION_CHANGED {
                 MEDIA_CHANGED.store(true, Ordering::Relaxed);
                 continue;
@@ -430,7 +353,6 @@ impl Drop for Notifications {
                 DestroyWindow(self.hwnd);
             }
             UnregisterHotKey(null_mut(), HOTKEY);
-            UnregisterHotKey(null_mut(), START_HOTKEY);
             CloseHandle(self.stop)
         };
     }
@@ -673,7 +595,6 @@ struct Model {
     cursor: Option<policy::Point>,
     pointer_idle_ms: Option<u32>,
     native_touch: bool,
-    start_web: crate::start_web::Button,
 }
 impl Model {
     fn sync(&mut self, guard: &mut rescue::Monitor, topology_changed: bool) -> Result<(), String> {
@@ -1150,7 +1071,6 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
             } else {
                 native::scene(&mut model.names)
             };
-            model.start_web.update(&model.scene.panels, &settings);
             next_scene = now + scene_fallback;
             publish = true;
         }
@@ -1251,17 +1171,10 @@ mod tests {
         }
     }
     #[test]
-    fn search_reserves_only_the_reclaimed_area_beyond_its_own_gutter() {
-        let face = Some(Rect::new(-1550, 1712, -350, 1796));
-        assert_eq!(layout(bar(2880, 192, 1800), face).unwrap().search_inset, 30);
-        assert_eq!(layout(bar(2880, 192, 1704), face).unwrap().search_inset, 0);
-    }
-    #[test]
     fn start_fits_a_physically_narrow_screen_and_the_right_anchor_never_shifts_outward() {
         let face = Some(Rect::new(-350, 1712, -2, 1796));
         let island = layout(bar(720, 192, 1800), face).unwrap();
         assert_eq!(island.start_width, 360);
-        assert_eq!(island.search_width, 174);
         assert_eq!(island.start_shift, 0);
         assert_eq!(island.tray_shift, 0);
     }

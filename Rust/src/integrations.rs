@@ -16,7 +16,7 @@ use windows_sys::Win32::{
     System::Registry::*,
 };
 
-mod search;
+pub(crate) mod search;
 mod shell;
 pub use shell::{configure_packaged_style, stop_packaged_style, verify_packaged_style};
 
@@ -74,8 +74,6 @@ pub fn check_profiles(settings: &Settings) -> Result<(), String> {
             start_width: 580,
             start_shift: -110,
             tray_shift: -108,
-            search_width: 622,
-            search_inset: 30,
         }),
     ] {
         let items = profiles::build(settings, geometry)?;
@@ -202,8 +200,8 @@ impl Session {
             .to_owned();
         let mut shell = shell::Host::open(&directory)?;
         let mut redirect = search::Redirect::new(&directory);
-        if settings.search_redirect {
-            redirect.configure(settings)?;
+        if let Err(error) = redirect.configure(settings) {
+            record(&directory, &error);
         }
         let (tx, rx) = mpsc::channel();
         *LAST_LAYOUT
@@ -238,6 +236,16 @@ impl Session {
                         continue;
                     }
                     Ok(Update::Settings(requested)) => {
+                        if requested.search_redirect != current.search_redirect
+                            || (requested.search_redirect
+                                && requested.web_engine != current.web_engine)
+                        {
+                            if let Err(error) = redirect.configure(&requested) {
+                                record(&directory, &error);
+                            }
+                            current.search_redirect = requested.search_redirect;
+                            current.web_engine.clone_from(&requested.web_engine);
+                        }
                         next = requested;
                         retry = (observed && (!layout.flyout_open || layout.native_touch))
                             .then_some(settle);
@@ -288,14 +296,6 @@ impl Session {
                     }
                     applied_layout = requested;
                     styled = true;
-                }
-                if (next.search_redirect != current.search_redirect
-                    || (next.search_redirect && next.web_engine != current.web_engine))
-                    && let Err(e) = redirect.configure(&next)
-                {
-                    record(&directory, &e);
-                    retry = Some(recover);
-                    continue;
                 }
                 current.clone_from(&next);
             }

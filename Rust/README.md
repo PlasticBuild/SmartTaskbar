@@ -14,11 +14,9 @@ Use **Reveal settings for display** to edit defaults or choose a connected monit
 
 **App icon size** scales pinned and running app icons from 70% to 125% using the same base size on horizontal and vertical taskbars. It updates the preview as you drag. Select **Apply** to use the new size.
 
-Start and Search use their Windows widths by default. Enable **Match Start and Search to island width** in Appearance and select **Apply** to size them to a bottom floating island within the panel size limits.
+Use **Match Start to island width** in Appearance to size the native Start menu to a bottom floating island within the panel size limits. This option is off by default. Windows supplies the Search interface and controls web results through its own settings.
 
-In **Web Search**, type a query and press Enter to use the search engine configured in your default browser. Direct search works with Brave, Chrome, Chromium, Edge, and Firefox and is available when Windows Search web results are disabled.
-
-Press **Ctrl+Alt+Shift+S**, or choose **Open SmartTaskbar Start** on the Web Search settings tab. SmartTaskbar Start searches installed apps, and **Web** or the `Web:` prefix shows web results as you pause typing. SmartTaskbar uses the search engine configured in supported Chromium browsers, including Brave, Chrome, and Edge. Embedded results use a separate WebView2 profile. **Open in browser** opens your real browser with its extensions and settings. Windows web results can stay disabled.
+Setup offers **MSEdgeRedirect (optional)**. The component is unselected by default. If you install it, use **Enable MSEdgeRedirect** under Appearance and select **Apply**. Use **Uninstall MSEdgeRedirect** in the same section to remove the component. Run Setup again to reinstall it.
 
 Turn on **Show taskbar media player**, choose **Media player side**, and select **Apply**. The player appears when an app starts reporting playback to Windows. Available artwork fills the player background with a blur. The player offers play or pause, previous and next controls, and a scrubber. Seeking and track navigation depend on the app. The player follows the taskbar orientation and fits inline when there is room. On a vertical taskbar, Left chooses the upper end and Right chooses the lower end.
 
@@ -27,7 +25,6 @@ Turn on **Show taskbar media player**, choose **Media player side**, and select 
 | Command | Action |
 | --- | --- |
 | `--settings` | Open the settings window. This is the default. |
-| `--start` | Open SmartTaskbar Start. |
 | `--run` | Run the controller for the current Windows session. |
 | `--stop` | Restore the taskbar and stop the Rust controller. |
 | `--pause` | Pause SmartTaskbar across sign-ins and restore the Windows taskbar. |
@@ -45,7 +42,7 @@ Build the per-user installer with `./Installer.ps1 -StyleRoot <prepared-portable
 
 Run `./Prepare-Windhawk.ps1 -OutputDirectory ../bin/portable-style` to prepare the pinned portable host and four styling modules for an installer build. The host ends up in `../bin/portable-style/Windhawk`. Close any running Windhawk instance before preparing a fresh host. The Rust engine reads and restores the prior native profiles. A `Windhawk` folder beside the executable or an explicit `SMARTTASKBAR_STYLE_ROOT` can also select the host. Without a style host the engine controls native taskbar visibility and Windows supplies its appearance.
 
-Search redirection is off by default. When enabled, the standalone helper and its settings are stored under `optional/search` next to the configuration file. See [third-party notices](NOTICES.md).
+The optional redirect executable, license, source archive, and preferences are stored under `optional/search` next to the configuration file. See [third-party notices](NOTICES.md).
 
 ## Compare performance in CAD
 

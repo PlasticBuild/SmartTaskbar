@@ -6,4 +6,4 @@ The stage script copies the Rust standard library and dependency notices into th
 
 The appearance integration calls a separately installed portable Windhawk host and its taskbar, Start menu, notification center and flyout positioning mods. Their individual notices apply to their respective distributions. [Windhawk](https://github.com/ramensoftware/windhawk) and [Windhawk mods](https://github.com/ramensoftware/windhawk-mods)
 
-MSEdgeRedirect is a separately distributed optional executable. It is fetched only after the user enables search redirection and runs the engine. Windows supplies the thumbnails in its native Search panel. MSEdgeRedirect has its own license and copyright notice. [MSEdgeRedirect license](https://github.com/rcmaehl/MSEdgeRedirect/blob/main/LICENSE)
+Setup offers MSEdgeRedirect as a separate optional executable alongside its license and corresponding source archive. [MSEdgeRedirect release](https://github.com/rcmaehl/MSEdgeRedirect/releases/tag/0.8.0.0)

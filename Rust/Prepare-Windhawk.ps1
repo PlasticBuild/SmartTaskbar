@@ -32,7 +32,7 @@ $cli = Join-Path $portable 'windhawk-cli.exe'
 try {
     $systemApps = Join-Path $env:SystemRoot 'SystemApps'
     $shellIncludes = @((Join-Path $env:SystemRoot 'explorer.exe'), (Join-Path ([Environment]::SystemDirectory) 'ShellHost.exe'))
-    $shellNames = @('StartMenuExperienceHost.exe', 'SearchHost.exe', 'SearchApp.exe', 'ShellExperienceHost.exe')
+    $shellNames = @('StartMenuExperienceHost.exe', 'ShellExperienceHost.exe')
     foreach ($directory in (Get-ChildItem -LiteralPath $systemApps -Directory)) {
         foreach ($name in $shellNames) {
             $hostPath = Join-Path $directory.FullName $name

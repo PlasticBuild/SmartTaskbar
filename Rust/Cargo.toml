@@ -1,6 +1,6 @@
 [package]
 name = "smarttaskbar-rs"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2024"
 publish = false
 
@@ -8,11 +8,9 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-webview2-com = "0.39.1"
 windows = { version = "0.62", features = [
     "Foundation", "Foundation_Collections", "Graphics_Imaging", "Media_Control",
-    "Storage_Streams", "Win32_System_WinRT", "Win32_System_Com", "Win32_UI_Accessibility",
-    "Win32_UI_Shell", "Win32_UI_Shell_Common"
+    "Storage_Streams", "Win32_System_WinRT"
 ] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi",
