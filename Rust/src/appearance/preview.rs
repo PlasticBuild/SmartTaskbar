@@ -510,7 +510,28 @@ pub(super) unsafe fn paint(hwnd: HWND, s: &State) {
         SetDCBrushColor(dc, palette.page);
         FillRect(dc, &bounds, GetStockObject(DC_BRUSH) as HBRUSH);
         let p = s.page;
-        if s.updates_tab {
+        if s.tab == Tab::WebSearch {
+            let card = Box2::at(p.preview.x, 102, p.width - 2 * p.preview.x, 228);
+            c.round(card, 9, palette.card, palette.line);
+            c.text(
+                Box2::at(card.x + 14, 112, card.w - 28, 30),
+                "Web Search",
+                s.paint.heading,
+                palette.text,
+            );
+            c.text(
+                Box2::at(card.x + 14, 150, card.w - 28, 25),
+                "Uses your default browser’s search engine.",
+                s.paint.normal,
+                palette.muted,
+            );
+            c.text(
+                Box2::at(card.x + 14, 290, card.w - 28, 30),
+                s.web_status,
+                s.paint.normal,
+                palette.text,
+            );
+        } else if s.tab == Tab::Updates {
             let card = Box2::at(p.preview.x, 102, p.width - 2 * p.preview.x, 228);
             c.round(card, 9, palette.card, palette.line);
             c.text(
@@ -583,7 +604,7 @@ pub(super) unsafe fn paint(hwnd: HWND, s: &State) {
             dpi: s.dpi,
             scroll: 0,
         };
-        header.fill(Box2::at(0, 0, p.width, 100), palette.page);
+        header.fill(Box2::at(0, 0, p.width, HEADER_HEIGHT), palette.page);
         header.text(
             Box2::at(p.preview.x, 12, (p.width - 195).max(160), 38),
             "SmartTaskbar",

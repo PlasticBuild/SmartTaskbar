@@ -21,7 +21,7 @@ use windows_sys::Win32::{
             SetThreadDpiAwarenessContext,
         },
         Input::KeyboardAndMouse::*,
-        Shell::ShellExecuteW,
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW},
         WindowsAndMessaging::*,
     },
 };
@@ -29,6 +29,8 @@ use windows_sys::Win32::{
 #[path = "appearance/preview.rs"]
 mod preview;
 use preview::Paint;
+#[path = "appearance/web_search.rs"]
+mod web_search;
 
 const LAYOUT: u16 = 101;
 const ALIGN: u16 = 102;
@@ -56,11 +58,15 @@ const TABS: u16 = 123;
 const CHECK_UPDATES: u16 = 124;
 const RELEASES: u16 = 125;
 const REPOSITORY: u16 = 126;
+const WEB_QUERY: u16 = 127;
+const WEB_OPEN: u16 = 128;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
 const UPDATE_TIMER: usize = 3;
 const ENGINE_TIMER: usize = 4;
 const LABEL: u16 = 1000;
+const HEADER_HEIGHT: i32 = 100;
+const TBM_GETPOS: u32 = WM_USER;
 const LABELS: &[(u16, &str)] = &[
     (LAYOUT, "&Layout"),
     (ALIGN, "Island &position"),
@@ -75,6 +81,7 @@ const LABELS: &[(u16, &str)] = &[
     (SHARED, "Shared edge de&lay"),
     (PROVIDER, "Search pro&vider"),
     (MEDIA_SIDE, "Media player &side"),
+    (WEB_QUERY, "&Search query"),
 ];
 
 fn wide(s: &str) -> Vec<u16> {
@@ -103,6 +110,13 @@ struct Page {
     settings: Box2,
     footer: i32,
     width: i32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Appearance,
+    Updates,
+    WebSearch,
 }
 
 impl Page {
@@ -185,6 +199,15 @@ impl Page {
             CHECK_UPDATES => return Box2::at(self.preview.x + 14, 235, 118, 32),
             RELEASES => return Box2::at(self.preview.x + 140, 235, 116, 32),
             REPOSITORY => return Box2::at(self.preview.x + 14, 277, 148, 32),
+            WEB_QUERY => {
+                return Box2::at(
+                    self.preview.x + 14,
+                    204,
+                    self.width - 2 * self.preview.x - 28,
+                    31,
+                );
+            }
+            WEB_OPEN => return Box2::at(self.preview.x + 14, 250, 104, 31),
             _ => return Box2::default(),
         };
         Box2::at(x, r.y + row + 10, w, height)
@@ -242,11 +265,12 @@ struct State {
     transition_until: Option<Instant>,
     monitors: Vec<Monitor>,
     monitor: Option<String>,
-    updates_tab: bool,
+    tab: Tab,
     settings_scroll: i32,
     update_job: Option<mpsc::Receiver<Result<updates::Status, String>>>,
     update_status: String,
     update_available: bool,
+    web_status: &'static str,
 }
 
 struct DpiContext(DPI_AWARENESS_CONTEXT);
@@ -333,11 +357,12 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             transition_until: None,
             monitors: crate::desktop::monitor_choices(),
             monitor: None,
-            updates_tab: false,
+            tab: Tab::Appearance,
             settings_scroll: 0,
             update_job: None,
             update_status: String::new(),
             update_available: false,
+            web_status: "",
         });
         let mut area: RECT = mem::zeroed();
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut area as *mut _ as _, 0);
@@ -371,6 +396,16 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
                 break;
             }
             let prior = GetFocus();
+            if state.tab == Tab::WebSearch
+                && msg.message == WM_KEYDOWN
+                && msg.wParam == usize::from(VK_RETURN)
+                && prior == GetDlgItem(hwnd, WEB_QUERY.into())
+            {
+                if msg.lParam & (1 << 30) == 0 {
+                    search_web(hwnd, &mut *state);
+                }
+                continue;
+            }
             if IsDialogMessageW(hwnd, &msg) == 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -378,13 +413,16 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             let current = GetFocus();
             if msg.message == WM_KEYDOWN && current != prior && IsChild(hwnd, current) != 0 {
                 let id = GetDlgCtrlID(current) as u16;
-                if (LAYOUT..=SHARED).contains(&id) && id != ENGINE && !state.updates_tab {
+                if (LAYOUT..=SHARED).contains(&id)
+                    && !matches!(id, ENGINE | APPLY)
+                    && state.tab == Tab::Appearance
+                {
                     let b = state.page.control(id);
                     let mut visible = RECT::default();
                     GetClientRect(hwnd, &mut visible);
                     let view_height = visible.bottom * 96 / state.dpi;
-                    if b.y - 20 < state.scroll {
-                        let dy = b.y - 20 - state.scroll;
+                    if b.y - 20 < state.scroll + HEADER_HEIGHT {
+                        let dy = b.y - 20 - HEADER_HEIGHT - state.scroll;
                         scroll(hwnd, &mut *state, dy);
                     } else if b.y + b.h + 8 > state.scroll + view_height {
                         let dy = b.y + b.h + 8 - state.scroll - view_height;
@@ -435,12 +473,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_GETMINMAXINFO => {
                 let limits = &mut *(lp as *mut MINMAXINFO);
-                limits.ptMinTrackSize.x = 360 * (*ptr).dpi / 96;
+                limits.ptMinTrackSize.x = 420 * (*ptr).dpi / 96;
                 limits.ptMinTrackSize.y = 280 * (*ptr).dpi / 96;
                 0
             }
             WM_ACTIVATE if (*ptr).ready && (wp & 0xffff) != WA_INACTIVE as usize => {
-                if !(*ptr).updates_tab && (*ptr).paint.refresh_icons() {
+                if (*ptr).tab == Tab::Appearance && (*ptr).paint.refresh_icons() {
                     SetTimer(hwnd, ICON_TIMER, 90, None);
                 }
                 sync_engine(hwnd, ptr);
@@ -496,6 +534,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_COMMAND if (*ptr).ready => {
                 let id = (wp & 0xffff) as u16;
                 let note = ((wp >> 16) & 0xffff) as u32;
+                let web_status = (*ptr).web_status;
+                if id == WEB_QUERY && note == EN_CHANGE && !web_status.is_empty() {
+                    (*ptr).web_status = "";
+                    redraw(hwnd);
+                }
                 if note == CBN_SELCHANGE {
                     if id == MONITOR {
                         select_monitor(hwnd, ptr);
@@ -514,6 +557,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         OVERRIDE => change_override(hwnd, ptr),
                         CHECK_UPDATES => check_updates(hwnd, ptr),
                         RELEASES | REPOSITORY => open_github(hwnd, ptr, id),
+                        WEB_OPEN => search_web(hwnd, ptr),
                         _ => {}
                     }
                 }
@@ -523,7 +567,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 read_controls(hwnd, ptr);
                 0
             }
-            WM_VSCROLL => {
+            WM_VSCROLL if lp == 0 => {
                 let s = &*ptr;
                 let step = match (wp & 0xffff) as i32 {
                     SB_LINEUP => -32,
@@ -532,7 +576,19 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     SB_PAGEDOWN => 200,
                     SB_TOP => -s.scroll,
                     SB_BOTTOM => s.scroll_max - s.scroll,
-                    SB_THUMBPOSITION | SB_THUMBTRACK => ((wp >> 16) & 0xffff) as i32 - s.scroll,
+                    SB_THUMBTRACK => {
+                        let mut info = SCROLLINFO {
+                            cbSize: mem::size_of::<SCROLLINFO>() as u32,
+                            fMask: SIF_TRACKPOS,
+                            ..Default::default()
+                        };
+                        if GetScrollInfo(hwnd, SB_VERT, &mut info) != 0 {
+                            info.nTrackPos - s.scroll
+                        } else {
+                            0
+                        }
+                    }
+                    SB_THUMBPOSITION => ((wp >> 16) & 0xffff) as i32 - s.scroll,
                     _ => 0,
                 };
                 scroll(hwnd, ptr, step);
@@ -542,7 +598,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 scroll(hwnd, ptr, -(((wp >> 16) as i16) as i32) * 48 / 120);
                 0
             }
-            WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP if !(*ptr).updates_tab => {
+            WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP if (*ptr).tab == Tab::Appearance => {
                 if (*ptr).ready {
                     pointer(
                         hwnd,
@@ -554,7 +610,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 }
                 0
             }
-            WM_MOUSELEAVE | WM_CAPTURECHANGED if !(*ptr).updates_tab => {
+            WM_MOUSELEAVE | WM_CAPTURECHANGED if (*ptr).tab == Tab::Appearance => {
                 (*ptr).demo.hot = None;
                 (*ptr).demo.over_edge = false;
                 (*ptr).demo.down = false;
@@ -598,13 +654,36 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
     }
 }
 
+unsafe extern "system" fn slider_wheel(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    id: usize,
+    _: usize,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_MOUSEWHEEL => {
+                SendMessageW(GetParent(hwnd), msg, wp, lp);
+                return 0;
+            }
+            WM_NCDESTROY => {
+                RemoveWindowSubclass(hwnd, Some(slider_wheel), id);
+            }
+            _ => {}
+        }
+        DefSubclassProc(hwnd, msg, wp, lp)
+    }
+}
+
 unsafe fn create_controls(hwnd: HWND, state: *mut State) {
     unsafe {
         let mut failed = false;
         for id in (LAYOUT..=TRANSPARENCY)
             .chain([ICON_SIZE])
             .chain(HOVER..=MEDIA_SIDE)
-            .chain(MONITOR..=REPOSITORY)
+            .chain(MONITOR..=WEB_OPEN)
         {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
@@ -678,6 +757,8 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 CHECK_UPDATES => ("BUTTON", "Check again", BS_PUSHBUTTON as u32),
                 RELEASES => ("BUTTON", "View releases", BS_PUSHBUTTON as u32),
                 REPOSITORY => ("BUTTON", "Open GitHub repository", BS_PUSHBUTTON as u32),
+                WEB_QUERY => ("EDIT", "", WS_BORDER | ES_AUTOHSCROLL as u32),
+                WEB_OPEN => ("BUTTON", "Search", BS_PUSHBUTTON as u32),
                 FULLSCREEN => ("BUTTON", "Go fullscreen", BS_PUSHBUTTON as u32),
                 MENU => ("BUTTON", "Open menu", BS_PUSHBUTTON as u32),
                 ENGINE => (
@@ -706,6 +787,10 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 null_mut(),
             );
             failed |= control.is_null();
+            if !control.is_null() && matches!(id, RADIUS | TRANSPARENCY | ICON_SIZE | HOVER | PRESS)
+            {
+                failed |= SetWindowSubclass(control, Some(slider_wheel), id.into(), 0) == 0;
+            }
         }
         if failed {
             (*state).status = "Windows could not initialize all of the settings controls.".into();
@@ -794,6 +879,8 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         (*state).paint.theme(hwnd);
         tab_item(hwnd, TCM_INSERTITEMW, 0, "Appearance");
         tab_item(hwnd, TCM_INSERTITEMW, 1, "Updates");
+        tab_item(hwnd, TCM_INSERTITEMW, 2, "Web Search");
+        SendDlgItemMessageW(hwnd, WEB_QUERY.into(), EM_SETLIMITTEXT, 512, 0);
         style_controls(hwnd, state);
         (*state).ready = true;
         monitor_controls(hwnd, state);
@@ -819,7 +906,7 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=REPOSITORY {
+        for id in LAYOUT..=WEB_OPEN {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
@@ -838,7 +925,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let w = client.right * 96 / dpi;
         let h = client.bottom * 96 / dpi;
         let page = Page::layout(w, h);
-        let total = if (*state).updates_tab {
+        let total = if (*state).tab != Tab::Appearance {
             344.max(h)
         } else {
             page.footer + 52
@@ -846,47 +933,49 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         (*state).page = page;
         (*state).scroll_max = (total - h).max(0);
         (*state).scroll = (*state).scroll.clamp(0, (*state).scroll_max);
-        let offset = (*state).scroll;
         let info = SCROLLINFO {
             cbSize: mem::size_of::<SCROLLINFO>() as u32,
             fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
             nMin: 0,
             nMax: total - 1,
             nPage: h.max(1) as u32,
-            nPos: offset,
+            nPos: (*state).scroll,
             nTrackPos: 0,
         };
         SetScrollInfo(hwnd, SB_VERT, &info, 1);
-        for id in LAYOUT..=REPOSITORY {
+        position_controls(hwnd, &*state);
+    }
+}
+
+unsafe fn position_controls(hwnd: HWND, state: &State) {
+    unsafe {
+        let State {
+            page,
+            dpi,
+            scroll: offset,
+            tab,
+            ..
+        } = *state;
+        let mut placements = Vec::with_capacity((WEB_OPEN - LAYOUT + 1) as usize + LABELS.len());
+        for id in LAYOUT..=WEB_OPEN {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
             let fixed = matches!(id, ENGINE | TABS | APPLY);
+            let y = b.y - if fixed { 0 } else { offset };
             let show = match id {
                 ENGINE | TABS => true,
-                CHECK_UPDATES | RELEASES | REPOSITORY => (*state).updates_tab,
-                _ => !(*state).updates_tab && (fixed || b.y - offset >= 101),
+                CHECK_UPDATES | RELEASES | REPOSITORY => tab == Tab::Updates && y > HEADER_HEIGHT,
+                WEB_QUERY | WEB_OPEN => tab == Tab::WebSearch && y > HEADER_HEIGHT,
+                _ => tab == Tab::Appearance && (fixed || y > HEADER_HEIGHT),
             };
             let control = GetDlgItem(hwnd, id as i32);
-            let visibility = if show { SW_SHOWNA } else { SW_HIDE };
-            ShowWindow(control, visibility);
             if !label.is_null() {
-                ShowWindow(
+                let y_label = y - 19;
+                placements.push((
                     label,
-                    if b.y - 19 - offset >= 101 {
-                        visibility
-                    } else {
-                        SW_HIDE
-                    },
-                );
-                SetWindowPos(
-                    label,
-                    null_mut(),
-                    b.x * dpi / 96,
-                    (b.y - 19 - offset) * dpi / 96,
-                    (b.w - 50) * dpi / 96,
-                    18 * dpi / 96,
-                    SWP_NOACTIVATE | SWP_NOZORDER,
-                );
+                    Box2::at(b.x, y_label, b.w - 50, 18),
+                    show && y_label > HEADER_HEIGHT,
+                ));
             }
             let height = if matches!(
                 id,
@@ -896,26 +985,69 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             } else {
                 b.h
             };
-            SetWindowPos(
+            if !control.is_null() {
+                placements.push((control, Box2::at(b.x, y, b.w, height), show));
+            }
+        }
+
+        // Move the entire control list without copying pixels from its old
+        // position, then invalidate the parent and controls together.
+        let px = |dip| dip * dpi / 96;
+        let flags = |show| {
+            SWP_NOACTIVATE
+                | SWP_NOZORDER
+                | SWP_NOCOPYBITS
+                | SWP_NOREDRAW
+                | if show { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW }
+        };
+        let mut batch = BeginDeferWindowPos(placements.len() as i32);
+        for &(control, b, show) in &placements {
+            if batch.is_null() {
+                break;
+            }
+            batch = DeferWindowPos(
+                batch,
                 control,
                 null_mut(),
-                b.x * dpi / 96,
-                (b.y - if fixed { 0 } else { offset }) * dpi / 96,
-                b.w * dpi / 96,
-                height * dpi / 96,
-                SWP_NOACTIVATE | SWP_NOZORDER,
+                px(b.x),
+                px(b.y),
+                px(b.w),
+                px(b.h),
+                flags(show),
             );
         }
-        redraw(hwnd);
+        if batch.is_null() || EndDeferWindowPos(batch) == 0 {
+            for (control, b, show) in placements {
+                SetWindowPos(
+                    control,
+                    null_mut(),
+                    px(b.x),
+                    px(b.y),
+                    px(b.w),
+                    px(b.h),
+                    flags(show),
+                );
+            }
+        }
+        RedrawWindow(
+            hwnd,
+            null(),
+            null_mut(),
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE,
+        );
     }
 }
 
 unsafe fn scroll(hwnd: HWND, state: *mut State, delta: i32) {
     unsafe {
-        let pos = ((*state).scroll + delta).clamp(0, (*state).scroll_max);
+        let pos = (*state)
+            .scroll
+            .saturating_add(delta)
+            .clamp(0, (*state).scroll_max);
         if pos != (*state).scroll {
             (*state).scroll = pos;
-            layout(hwnd, state);
+            SetScrollPos(hwnd, SB_VERT, pos, 1);
+            position_controls(hwnd, &*state);
         }
     }
 }
@@ -1041,8 +1173,7 @@ unsafe fn change_override(hwnd: HWND, state: *mut State) {
 unsafe fn read_controls(hwnd: HWND, state: *mut State) {
     unsafe {
         let sel = |id| SendDlgItemMessageW(hwnd, id, CB_GETCURSEL, 0, 0);
-        // TBM_GETPOS is the trackbar's WM_USER + 0 message.
-        let slider = |id| SendDlgItemMessageW(hwnd, id, WM_USER, 0, 0) as u8;
+        let slider = |id| SendDlgItemMessageW(hwnd, id, TBM_GETPOS, 0, 0) as u8;
         let check = |id| SendDlgItemMessageW(hwnd, id, BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
         let s = &mut *state;
         s.draft.island = sel(LAYOUT as i32) == 1;
@@ -1219,21 +1350,27 @@ unsafe fn tab_item(hwnd: HWND, message: u32, index: usize, caption: &str) {
 unsafe fn switch_tab(hwnd: HWND, state: *mut State) {
     unsafe {
         let s = &mut *state;
-        let updates = SendDlgItemMessageW(hwnd, TABS as i32, TCM_GETCURSEL, 0, 0) == 1;
-        if updates == s.updates_tab {
+        let selected = match SendDlgItemMessageW(hwnd, TABS as i32, TCM_GETCURSEL, 0, 0) {
+            0 => Tab::Appearance,
+            1 => Tab::Updates,
+            2 => Tab::WebSearch,
+            _ => return,
+        };
+        if selected == s.tab {
             return;
         }
-        s.updates_tab = updates;
-        if updates {
+        if s.tab == Tab::Appearance {
             s.settings_scroll = s.scroll;
-            s.scroll = 0;
             s.demo.hot = None;
             s.demo.down = false;
             s.demo.over_edge = false;
             s.demo.last = None;
             KillTimer(hwnd, TIMER);
             KillTimer(hwnd, ICON_TIMER);
-        } else {
+        }
+        s.tab = selected;
+        s.scroll = 0;
+        if selected == Tab::Appearance {
             s.scroll = s.settings_scroll;
             if !s.paint.receive_icons() || s.paint.refresh_icons() {
                 SetTimer(hwnd, ICON_TIMER, 90, None);
@@ -1241,6 +1378,23 @@ unsafe fn switch_tab(hwnd: HWND, state: *mut State) {
             update_animation(hwnd, state);
         }
         layout(hwnd, state);
+    }
+}
+
+unsafe fn search_web(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let input = GetDlgItem(hwnd, WEB_QUERY.into());
+        let mut text = [0; 513];
+        let length = GetWindowTextW(input, text.as_mut_ptr(), text.len() as i32);
+        let text = String::from_utf16_lossy(&text[..length as usize]);
+        let query = text.trim();
+        (*state).web_status = if query.is_empty() {
+            SetFocus(input);
+            "Enter a search query."
+        } else {
+            web_search::open(query).err().unwrap_or_default()
+        };
+        redraw(hwnd);
     }
 }
 
@@ -1429,6 +1583,90 @@ unsafe fn redraw(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trackbar_forwards_the_wheel_without_changing_its_position() {
+        unsafe extern "system" fn count_wheel(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+            _: usize,
+            data: usize,
+        ) -> LRESULT {
+            unsafe {
+                if msg == WM_MOUSEWHEEL {
+                    *(data as *mut i32) = (wp >> 16) as i16 as i32;
+                    return 0;
+                }
+                DefSubclassProc(hwnd, msg, wp, lp)
+            }
+        }
+        unsafe {
+            assert_ne!(
+                InitCommonControlsEx(&INITCOMMONCONTROLSEX {
+                    dwSize: mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                    dwICC: ICC_BAR_CLASSES,
+                }),
+                0
+            );
+            let instance = GetModuleHandleW(null());
+            let parent = CreateWindowExW(
+                0,
+                wide("STATIC").as_ptr(),
+                null(),
+                WS_POPUP,
+                0,
+                0,
+                200,
+                60,
+                null_mut(),
+                null_mut(),
+                instance,
+                null(),
+            );
+            assert!(!parent.is_null());
+            let slider = CreateWindowExW(
+                0,
+                wide("msctls_trackbar32").as_ptr(),
+                null(),
+                WS_CHILD,
+                0,
+                0,
+                150,
+                35,
+                parent,
+                null_mut(),
+                instance,
+                null(),
+            );
+            assert!(!slider.is_null());
+            let mut observed = 0;
+            assert_ne!(
+                SetWindowSubclass(
+                    parent,
+                    Some(count_wheel),
+                    1,
+                    (&mut observed as *mut i32) as usize
+                ),
+                0
+            );
+            assert_ne!(SetWindowSubclass(slider, Some(slider_wheel), 1, 0), 0);
+            SendMessageW(slider, TBM_SETRANGEMAX, 0, 100);
+            SendMessageW(slider, TBM_SETPOS, 0, 50);
+            SendMessageW(
+                slider,
+                WM_MOUSEWHEEL,
+                usize::from((-120i16) as u16) << 16,
+                0,
+            );
+            assert_eq!(observed, -120);
+            assert_eq!(SendMessageW(slider, TBM_GETPOS, 0, 0), 50);
+            SendMessageW(slider, WM_KEYDOWN, VK_RIGHT.into(), 0);
+            assert_eq!(SendMessageW(slider, TBM_GETPOS, 0, 0), 51);
+            DestroyWindow(parent);
+        }
+    }
+
     #[test]
     fn controls_reflow_below_a_narrow_preview() {
         let wide = Page::layout(1000, 640);

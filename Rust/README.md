@@ -14,6 +14,8 @@ Use **Reveal settings for display** to edit defaults or choose a connected monit
 
 **App icon size** scales pinned and running app icons from 70% to 125% using the same base size on horizontal and vertical taskbars. It updates the preview as you drag. Select **Apply** to use the new size.
 
+In **Web Search**, type a query and press Enter to use the search engine configured in your default browser. Direct search works with Brave, Chrome, Chromium, Edge, and Firefox and is available when Windows Search web results are disabled.
+
 Turn on **Show taskbar media player**, choose **Media player side**, and select **Apply**. The player appears when an app starts reporting playback to Windows. Available artwork fills the player background with a blur. The player offers play or pause, previous and next controls, and a scrubber. Seeking and track navigation depend on the app. The player follows the taskbar orientation and fits inline when there is room. On a vertical taskbar, Left chooses the upper end and Right chooses the lower end.
 
 ## Commands
