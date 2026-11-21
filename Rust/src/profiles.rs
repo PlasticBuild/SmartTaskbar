@@ -21,6 +21,7 @@ type Geometry = Option<(i32, i32, i32)>;
 const ISLAND: &str = include_str!("../assets/taskbar/Island.json");
 const VERTICAL: &str = include_str!("../assets/taskbar/IslandVertical.json");
 const FULL: &str = include_str!("../assets/taskbar/FullWidth.json");
+const SEARCH_OPTIONS: &str = include_str!("../assets/taskbar/SearchOptions.js");
 const START: &str =
     "StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu";
 const SEARCH: &str = "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid";
@@ -345,7 +346,7 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
     let mut profile = Profile::from([
         ("theme".into(), "".into()),
         ("disableNewStartMenuLayout".into(), "default".into()),
-        ("webContentCustomJs".into(), "".into()),
+        ("webContentCustomJs".into(), SEARCH_OPTIONS.into()),
     ]);
     let joined = geometry.is_some();
     rule(&mut profile, "Border#AcrylicBorder", glass(s, joined));
