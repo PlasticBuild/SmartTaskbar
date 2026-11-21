@@ -61,6 +61,7 @@ const REPOSITORY: u16 = 126;
 const WEB_QUERY: u16 = 127;
 const WEB_OPEN: u16 = 128;
 const MATCH_MENU_WIDTH: u16 = 129;
+const OPEN_START: u16 = 130;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
 const UPDATE_TIMER: usize = 3;
@@ -210,6 +211,7 @@ impl Page {
                 );
             }
             WEB_OPEN => return Box2::at(self.preview.x + 14, 250, 104, 31),
+            OPEN_START => return Box2::at(self.preview.x + 126, 250, 175, 31),
             _ => return Box2::default(),
         };
         Box2::at(x, r.y + row + 10, w, height)
@@ -562,6 +564,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         CHECK_UPDATES => check_updates(hwnd, ptr),
                         RELEASES | REPOSITORY => open_github(hwnd, ptr, id),
                         WEB_OPEN => search_web(hwnd, ptr),
+                        OPEN_START => crate::start_web::launch_start(),
                         _ => {}
                     }
                 }
@@ -687,7 +690,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         for id in (LAYOUT..=TRANSPARENCY)
             .chain([ICON_SIZE])
             .chain(HOVER..=MEDIA_SIDE)
-            .chain(MONITOR..=MATCH_MENU_WIDTH)
+            .chain(MONITOR..=OPEN_START)
         {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
@@ -768,6 +771,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 REPOSITORY => ("BUTTON", "Open GitHub repository", BS_PUSHBUTTON as u32),
                 WEB_QUERY => ("EDIT", "", WS_BORDER | ES_AUTOHSCROLL as u32),
                 WEB_OPEN => ("BUTTON", "Search", BS_PUSHBUTTON as u32),
+                OPEN_START => ("BUTTON", "Open SmartTaskbar Start", BS_PUSHBUTTON as u32),
                 FULLSCREEN => ("BUTTON", "Go fullscreen", BS_PUSHBUTTON as u32),
                 MENU => ("BUTTON", "Open menu", BS_PUSHBUTTON as u32),
                 ENGINE => (
@@ -916,7 +920,7 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=MATCH_MENU_WIDTH {
+        for id in LAYOUT..=OPEN_START {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
@@ -966,9 +970,8 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
             tab,
             ..
         } = *state;
-        let mut placements =
-            Vec::with_capacity((MATCH_MENU_WIDTH - LAYOUT + 1) as usize + LABELS.len());
-        for id in LAYOUT..=MATCH_MENU_WIDTH {
+        let mut placements = Vec::with_capacity((OPEN_START - LAYOUT + 1) as usize + LABELS.len());
+        for id in LAYOUT..=OPEN_START {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
             let fixed = matches!(id, ENGINE | TABS | APPLY);
@@ -976,7 +979,7 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
             let show = match id {
                 ENGINE | TABS => true,
                 CHECK_UPDATES | RELEASES | REPOSITORY => tab == Tab::Updates && y > HEADER_HEIGHT,
-                WEB_QUERY | WEB_OPEN => tab == Tab::WebSearch && y > HEADER_HEIGHT,
+                WEB_QUERY | WEB_OPEN | OPEN_START => tab == Tab::WebSearch && y > HEADER_HEIGHT,
                 _ => tab == Tab::Appearance && (fixed || y > HEADER_HEIGHT),
             };
             let control = GetDlgItem(hwnd, id as i32);

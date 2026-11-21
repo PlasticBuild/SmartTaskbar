@@ -370,6 +370,7 @@ pub(super) fn hovered_thumbnail(point: Point, shell: u32) -> Option<Rect> {
 
 fn shell_surface(name: &str, class: &str, has_owner: bool) -> bool {
     match name {
+        "smarttaskbar-rs.exe" => class == "SmartTaskbar.Rust.WebSearchPane",
         "startmenuexperiencehost.exe" | "searchhost.exe" | "searchapp.exe" => matches!(
             class,
             "Windows.UI.Core.CoreWindow"

@@ -18,7 +18,7 @@ Start and Search use their Windows widths by default. Enable **Match Start and S
 
 In **Web Search**, type a query and press Enter to use the search engine configured in your default browser. Direct search works with Brave, Chrome, Chromium, Edge, and Firefox and is available when Windows Search web results are disabled.
 
-In Start Search, choose **Search the web** or press **Ctrl+Shift+W**. SmartTaskbar opens an embedded results pane at the same position and uses the default search engine configured in supported Chromium browsers, including Brave, Chrome, and Edge. If the search field is unavailable to accessibility, enter the query in the embedded pane. This works with Windows web results disabled and uses the installed Microsoft Edge WebView2 runtime.
+Press **Ctrl+Alt+Shift+S**, or choose **Open SmartTaskbar Start** on the Web Search settings tab. SmartTaskbar Start searches installed apps, and **Web** or the `Web:` prefix shows web results as you pause typing. SmartTaskbar uses the search engine configured in supported Chromium browsers, including Brave, Chrome, and Edge. Embedded results use a separate WebView2 profile. **Open in browser** opens your real browser with its extensions and settings. Windows web results can stay disabled.
 
 Turn on **Show taskbar media player**, choose **Media player side**, and select **Apply**. The player appears when an app starts reporting playback to Windows. Available artwork fills the player background with a blur. The player offers play or pause, previous and next controls, and a scrubber. Seeking and track navigation depend on the app. The player follows the taskbar orientation and fits inline when there is room. On a vertical taskbar, Left chooses the upper end and Right chooses the lower end.
 
@@ -27,6 +27,7 @@ Turn on **Show taskbar media player**, choose **Media player side**, and select 
 | Command | Action |
 | --- | --- |
 | `--settings` | Open the settings window. This is the default. |
+| `--start` | Open SmartTaskbar Start. |
 | `--run` | Run the controller for the current Windows session. |
 | `--stop` | Restore the taskbar and stop the Rust controller. |
 | `--pause` | Pause SmartTaskbar across sign-ins and restore the Windows taskbar. |

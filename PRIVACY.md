@@ -6,4 +6,6 @@ Opening Settings checks GitHub for the latest release. The optional search redir
 
 The **Web Search** tab passes your query to your default browser when you submit it. SmartTaskbar does not store the query or send it over the network.
 
-The **Search the web** action in Start reads the focused search field when you invoke it and sends the submitted query to your default browser’s configured engine through an embedded WebView2 pane. The pane uses a separate browser data folder beside the SmartTaskbar settings and does not share your default browser’s cookies.
+SmartTaskbar Start keeps app searches on your PC. The **Web** tab and **Web:** prefix send your web query to your configured search engine after you pause typing. The embedded WebView2 view has a separate browser data folder beside the SmartTaskbar settings. **Open in browser** launches your default browser directly.
+
+While Windows Search has focus, the optional handoff to SmartTaskbar Start uses Windows accessibility to detect the search field and carry over the query when requested.

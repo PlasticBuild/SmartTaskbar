@@ -60,7 +60,8 @@ impl Drop for SingleInstance {
 #[derive(Debug, PartialEq)]
 enum Action {
     Settings,
-    StartWebSearch(usize),
+    Start,
+    StartWebSearch { hwnd: usize, prefixed: bool },
     Run,
     Stop,
     Pause,
@@ -93,12 +94,15 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<Pat
         }
         let next = match arg.to_str() {
             Some("--settings") => Action::Settings,
-            Some("--start-web-search") => Action::StartWebSearch(
-                it.next()
+            Some("--start") => Action::Start,
+            Some("--start-web-search" | "--start-prefixed-web-search") => Action::StartWebSearch {
+                hwnd: it
+                    .next()
                     .and_then(|value| value.to_str().and_then(|s| s.parse().ok()))
                     .filter(|hwnd| *hwnd != 0)
                     .ok_or("Supply the active Start Search window.")?,
-            ),
+                prefixed: arg == "--start-prefixed-web-search",
+            },
             Some("--run") => Action::Run,
             Some("--stop") => Action::Stop,
             Some("--pause") => Action::Pause,
@@ -299,8 +303,8 @@ fn execute() -> Result<(), String> {
     }
     let path = std::path::absolute(path.unwrap_or(settings::default_path()?))
         .map_err(|e| e.to_string())?;
-    if let Action::StartWebSearch(hwnd) = action {
-        return start_web::show(hwnd, &path);
+    if let Action::StartWebSearch { hwnd, prefixed } = action {
+        return start_web::show(hwnd, &path, prefixed);
     }
     if action == Action::PrepareUpdate {
         return prepare_update(&path);
@@ -324,6 +328,7 @@ fn execute() -> Result<(), String> {
     let settings = Settings::load(&path)?;
     match action {
         Action::Settings => appearance::show(&path),
+        Action::Start => start_web::open_start(&path),
         Action::SyncStartup => integrations::sign_in(&path, settings.start_at_sign_in),
         Action::Inspect => {
             println!("{}", desktop::inspect()?);

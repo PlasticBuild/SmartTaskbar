@@ -32,7 +32,7 @@ fn search_argument(browser: &str, query: &str) -> Option<String> {
     }
 }
 
-pub(super) fn open(query: &str) -> Result<(), &'static str> {
+pub(crate) fn open(query: &str) -> Result<(), &'static str> {
     let browser = default_browser().ok_or("Windows could not find your default browser.")?;
     let argument = browser
         .file_name()
