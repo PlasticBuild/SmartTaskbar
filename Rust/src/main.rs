@@ -70,7 +70,7 @@ enum Action {
     Recover,
     PrepareUpdate,
     ConfigureStyle,
-    VerifyStyle,
+    VerifyStyle { allow_legacy_search: bool },
     SyncStartup,
     UninstallRedirect,
     Help,
@@ -106,7 +106,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<Pat
             Some("--recover-shell") => Action::Recover,
             Some("--prepare-update") => Action::PrepareUpdate,
             Some("--configure-style") => Action::ConfigureStyle,
-            Some("--verify-style") => Action::VerifyStyle,
+            Some("--verify-style" | "--verify-legacy-style") => Action::VerifyStyle {
+                allow_legacy_search: arg == "--verify-legacy-style",
+            },
             Some("--sync-startup") => Action::SyncStartup,
             Some("--uninstall-redirect") => Action::UninstallRedirect,
             Some("--help" | "-h") => Action::Help,
@@ -305,8 +307,14 @@ fn execute() -> Result<(), String> {
     if action == Action::PrepareUpdate {
         return prepare_update(&path);
     }
-    if action == Action::VerifyStyle {
-        return integrations::verify_packaged_style(&path.with_file_name("Windhawk"));
+    if let Action::VerifyStyle {
+        allow_legacy_search,
+    } = action
+    {
+        return integrations::verify_packaged_style(
+            &path.with_file_name("Windhawk"),
+            allow_legacy_search,
+        );
     }
     if action == Action::UninstallRedirect {
         return integrations::search::uninstall(&path);

@@ -148,7 +148,22 @@ Section "SmartTaskbar (required)" Application
         # Keep the same verified portable style version and its caches on app updates.
         ExecWait '"$Stage\${APP}" --verify-style --config "$INSTDIR\settings.json"' $0
         IfErrors backup_style
-        StrCmp $0 0 reuse_style backup_style
+        StrCmp $0 0 reuse_style
+        # A previously injected SearchHost can keep the directory locked after the host stops.
+        # The verified engine and mods are the same. Update their scope file in place.
+        ExecWait '"$Stage\${APP}" --verify-legacy-style --config "$INSTDIR\settings.json"' $0
+        IfErrors backup_style
+        StrCmp $0 0 0 backup_style
+        StrCpy $Reason "Updating the styling host scope"
+        CreateDirectory "$Stage\prior\engine"
+        ClearErrors
+        CopyFiles /SILENT "$INSTDIR\Windhawk\AppData\Engine\settings.ini" "$Stage\prior\engine"
+        IfErrors restore
+        CopyFiles /SILENT "$Stage\Windhawk\AppData\Engine\settings.ini" "$INSTDIR\Windhawk\AppData\Engine"
+        IfErrors restore
+        ExecWait '"$Stage\${APP}" --verify-style --config "$INSTDIR\settings.json"' $0
+        IfErrors restore
+        StrCmp $0 0 reuse_style restore
     reuse_style:
         StrCpy $ReplaceStyle 0
         Goto swap_app
@@ -183,6 +198,9 @@ Section "SmartTaskbar (required)" Application
     restore_app:
         Delete "$INSTDIR\${APP}"
     restore:
+        IfFileExists "$Stage\prior\engine\settings.ini" 0 restore_style
+        CopyFiles /SILENT "$Stage\prior\engine\settings.ini" "$INSTDIR\Windhawk\AppData\Engine"
+    restore_style:
         IfFileExists "$Stage\prior\Windhawk\windhawk.exe" 0 restore_exe
         Rename "$Stage\prior\Windhawk" "$INSTDIR\Windhawk"
     restore_exe:

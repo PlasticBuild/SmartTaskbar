@@ -166,7 +166,7 @@ pub fn configure_packaged_style() -> Result<(), String> {
         "[Settings]\r\nLoggingVerbosity=0\r\nInclude={includes}\r\nExclude=*\r\nInjectIntoCriticalProcesses=0\r\nInjectIntoIncompatiblePrograms=0\r\nInjectIntoGames=0\r\n"
     );
     atomic_write(&root.join("AppData/Engine/settings.ini"), ini.as_bytes())?;
-    verify_packaged_style(&root)?;
+    verify_packaged_style(&root, false)?;
     // A normal Windhawk mod install writes its declared defaults. A portable
     // bundle has no installer for each mod, so create that restorable baseline.
     for id in IDS {
@@ -187,10 +187,10 @@ pub fn configure_packaged_style() -> Result<(), String> {
     Ok(())
 }
 
-pub fn verify_packaged_style(root: &Path) -> Result<(), String> {
+pub fn verify_packaged_style(root: &Path, allow_legacy_search: bool) -> Result<(), String> {
     let windows = PathBuf::from(std::env::var_os("SystemRoot").ok_or("Missing Windows directory")?);
     let settings = run_cli(root, &["app", "settings", "get"], None)?;
-    if !scope_ok(&settings, &windows, false) {
+    if !scope_ok(&settings, &windows, allow_legacy_search) {
         return Err(
             "The bundled styling host does not have the required Windows shell scope.".into(),
         );
