@@ -33,6 +33,7 @@ const SEARCH_OPTIONS: &str = include_str!("../assets/taskbar/SearchOptions.js");
 const START: &str =
     "StartMenu.StartBlendedFlexFrame > Grid#FrameRoot > Grid#AnimationRoot > Grid#MainMenu";
 const SEARCH: &str = "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid";
+const SEARCH_PAGE: &str = "Cortana.UI.Views.TaskbarSearchPage";
 const SEARCH_SURFACE: &str =
     "Cortana.UI.Views.TaskbarSearchPage > Grid#RootGrid > Grid#OuterBorderGrid";
 const CLOUD_PROMPTS: &str = r#"#menuContainer .menuItem[aria-label="Turn on cloud search for your Microsoft account"], #menuContainer .menuItem[aria-label="Turn on cloud search for your work or school account"]"#;
@@ -367,18 +368,19 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
         "Border#AcrylicOverlay",
         ["Background=Transparent".into(), corner(s, joined)],
     );
-    rule(
-        &mut profile,
-        "Border#AppBorder",
-        [
-            format!("Background:={}", taskbar_brush(s)),
-            "Visibility=Visible".into(),
-            "BorderBrush:=<SolidColorBrush Color=\"{ThemeResource SurfaceStrokeColorDefault}\" />"
-                .into(),
-            corner(s, joined),
-            "BorderThickness=1".into(),
-        ],
-    );
+    let radius = s.radius;
+    let mut frame = vec![
+        format!("Background:={}", taskbar_brush(s)),
+        "Visibility=Visible".into(),
+        "BorderBrush:=<SolidColorBrush Color=\"{ThemeResource SurfaceStrokeColorDefault}\" />"
+            .into(),
+        if joined {
+            format!("CornerRadius={radius},{radius},0,0")
+        } else {
+            format!("CornerRadius={radius}")
+        },
+        "BorderThickness=1".into(),
+    ];
     rule(
         &mut profile,
         "Border#AccentAppBorder, Border#LayerBorder, Border#AccentLayerBorder",
@@ -403,34 +405,54 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
         );
         let width = island.search_width;
         let search_width = [
-            "MinWidth=0".into(),
             format!("Width={width}"),
+            format!("MinWidth={width}"),
             format!("MaxWidth={width}"),
         ];
-        let mut search = search_width.to_vec();
-        search.push("HorizontalAlignment=Center".into());
-        if island.search_inset > 0 {
-            search.push(format!("Margin=0,0,0,{}", island.search_inset));
-        }
-        rule(&mut profile, SEARCH, search);
+        // The native border has its own width and side margins inside the search grid.
+        // Size the painted border as well as its containers so the visible panel lines up.
+        frame.extend(search_width.clone());
+        frame.extend(["HorizontalAlignment=Center".into(), "Margin=0".into()]);
+        rule(
+            &mut profile,
+            SEARCH_PAGE,
+            ["Padding=0", "Background=Transparent"],
+        );
+        rule(
+            &mut profile,
+            SEARCH,
+            search_width.clone().into_iter().chain([
+                "HorizontalAlignment=Center".into(),
+                "Background=Transparent".into(),
+                format!("Margin=0,0,0,{}", island.search_inset),
+            ]),
+        );
         rule(
             &mut profile,
             "Grid#QueryFormulationRoot",
             search_width
                 .clone()
                 .into_iter()
-                .chain(["HorizontalAlignment=Stretch".into()]),
+                .chain(["HorizontalAlignment=Stretch".into(), "Margin=0".into()]),
         );
         rule(
             &mut profile,
             SEARCH_SURFACE,
-            search_width
-                .into_iter()
-                .chain(["Background=Transparent".into()]),
+            search_width.into_iter().chain([
+                "Background=Transparent".into(),
+                "HorizontalAlignment=Center".into(),
+                "Margin=0".into(),
+            ]),
+        );
+        rule(
+            &mut profile,
+            "Border#TaskbarMargin",
+            ["Visibility=Collapsed"],
         );
     } else {
         rule(&mut profile, SEARCH_SURFACE, ["Background=Transparent"]);
     }
+    rule(&mut profile, "Border#AppBorder", frame);
     style_search_results(&mut profile, s);
     style_context_menus(&mut profile, s);
     profile
@@ -723,9 +745,9 @@ mod tests {
             assert_eq!(
                 background[3],
                 if geometry.is_some() {
-                    "CornerRadius=17,17,0,0"
+                    "CornerRadius=11,11,0,0"
                 } else {
-                    "CornerRadius=17"
+                    "CornerRadius=11"
                 }
             );
             let glass_layers = styles(
@@ -765,10 +787,11 @@ mod tests {
         assert_eq!(
             styles(&result[1], SEARCH),
             [
-                "MinWidth=0",
                 "Width=568",
+                "MinWidth=568",
                 "MaxWidth=568",
                 "HorizontalAlignment=Center",
+                "Background=Transparent",
                 "Margin=0,0,0,28"
             ]
         );
@@ -785,6 +808,9 @@ mod tests {
         assert!(styles(&limit[1], START).contains(&format!("Width={START_MAX_DIP}")));
         assert!(styles(&limit[1], SEARCH).contains(&"Width=1020".into()));
         assert!(styles(&limit[1], "Grid#QueryFormulationRoot").contains(&"Width=1020".into()));
+        let border = styles(&limit[1], "Border#AppBorder");
+        assert!(border.contains(&"Width=1020".into()));
+        assert!(border.contains(&"Margin=0".into()));
         assert!(
             styles(&build(&s, geometry(320, 0, 0)).unwrap()[1], START)
                 .contains(&"Width=320".into())
