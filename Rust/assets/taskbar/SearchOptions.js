@@ -4,7 +4,7 @@
     if (!style) return;
     style.dataset.smartTaskbarSearchOptions = "true";
 
-    // Filter the dropdown model before rendering so keyboard navigation skips the hidden entries.
+    /* Filter the dropdown model before rendering so keyboard navigation skips the hidden entries. */
     const installed = Symbol.for("SmartTaskbar.SearchOptions");
     function install() {
         const menu = window.WSB?.MenuFactory?.prototype;
@@ -34,7 +34,7 @@
 
                     items = filterPrompts(items);
                 } catch {
-                    // A different Windows Search layout should still open the original menu.
+                    /* A different Windows Search layout should still open the original menu. */
                 }
             }
             return showDropdownMenu.call(this, items, button, menuType, ...rest);

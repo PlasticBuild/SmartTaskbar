@@ -346,7 +346,11 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
     let mut profile = Profile::from([
         ("theme".into(), "".into()),
         ("disableNewStartMenuLayout".into(), "default".into()),
-        ("webContentCustomJs".into(), SEARCH_OPTIONS.into()),
+        // Windhawk stores settings in an INI file and rejects line breaks.
+        (
+            "webContentCustomJs".into(),
+            SEARCH_OPTIONS.replace(['\r', '\n'], " "),
+        ),
     ]);
     let joined = geometry.is_some();
     rule(&mut profile, "Border#AcrylicBorder", glass(s, joined));
@@ -616,6 +620,10 @@ mod tests {
                     assert!(!profile.to_string().contains("__"));
                     let map = profile.as_object().unwrap();
                     assert!(map.values().all(Value::is_string));
+                    assert!(
+                        map.values()
+                            .all(|v| !v.as_str().unwrap().contains(['\r', '\n']))
+                    );
                     if i == 3 {
                         continue;
                     }
