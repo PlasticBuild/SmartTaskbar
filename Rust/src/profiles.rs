@@ -17,7 +17,14 @@ pub const IDS: [&str; 4] = [
 ];
 
 type Profile = BTreeMap<String, String>;
-type Geometry = Option<(i32, i32, i32)>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BottomIsland {
+    pub start_width: i32,
+    pub start_shift: i32,
+    pub tray_shift: i32,
+    pub search_inset: i32,
+}
+pub type Geometry = Option<BottomIsland>;
 const ISLAND: &str = include_str!("../assets/taskbar/Island.json");
 const VERTICAL: &str = include_str!("../assets/taskbar/IslandVertical.json");
 const FULL: &str = include_str!("../assets/taskbar/FullWidth.json");
@@ -381,10 +388,10 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
         "Border#StartDropShadow, Border#RootGridDropShadow, Border#DropShadow, Border#dropshadow",
         [corner(s, joined)],
     );
-    if let Some((measured, _, bottom)) = geometry {
+    if let Some(island) = geometry {
         // The caller accounts for narrow monitors when measuring Start. Search's native
         // host has a 600-DIP layout; keep wider islands from clipping its controls.
-        let width = measured.min(START_MAX_DIP);
+        let width = island.start_width.min(START_MAX_DIP);
         rule(
             &mut profile,
             START,
@@ -394,8 +401,8 @@ fn start_search(s: &Settings, geometry: Geometry) -> Profile {
             format!("Width={}", width.min(600)),
             format!("HorizontalAlignment={}", alignment(s)),
         ];
-        if bottom > 0 {
-            search.push(format!("Margin=0,0,0,{bottom}"))
+        if island.search_inset > 0 {
+            search.push(format!("Margin=0,0,0,{}", island.search_inset));
         }
         rule(&mut profile, SEARCH, search);
     }
@@ -466,7 +473,7 @@ fn notifications(s: &Settings, joined: bool) -> Profile {
     profile
 }
 
-fn positions(s: &Settings, geometry: Geometry) -> Profile {
+fn positions(geometry: Geometry) -> Profile {
     let mut profile = Profile::new();
     for panel in ["actionCenter", "notificationCenter"] {
         profile.insert(
@@ -480,24 +487,31 @@ fn positions(s: &Settings, geometry: Geometry) -> Profile {
         );
         profile.insert(
             format!("{panel}.horizontalShift"),
-            geometry.map_or(0, |(_, shift, _)| shift).to_string(),
+            geometry.map_or(0, |island| island.tray_shift).to_string(),
         );
     }
-    let anchor = geometry.map_or("windowsDefault".into(), |_| {
-        alignment(s).to_ascii_lowercase()
-    });
-    profile.insert("startMenu.horizontalAlignment".into(), anchor);
+    profile.insert(
+        "startMenu.horizontalAlignment".into(),
+        if geometry.is_some() {
+            "center"
+        } else {
+            "windowsDefault"
+        }
+        .into(),
+    );
     profile.insert(
         "startMenu.verticalAlignment".into(),
         "windowsDefault".into(),
     );
     profile.insert("startMenu.verticalShift".into(), "0".into());
-    profile.insert("startMenu.horizontalShift".into(), "0".into());
+    profile.insert(
+        "startMenu.horizontalShift".into(),
+        geometry.map_or(0, |island| island.start_shift).to_string(),
+    );
     profile
 }
 
-/// Geometry, when present, describes a measurable bottom island in DIPs: Start's
-/// display-bounded width, the tray's signed horizontal shift, and Search's bottom inset.
+/// Geometry describes the measured bottom island in DIPs for Start, Search, and tray panels.
 /// Other edges keep Explorer's native flyout positions.
 pub fn build(s: &Settings, geometry: Geometry) -> Result<Vec<Value>, String> {
     build_with_reserve(s, geometry, crate::media::Reserve::default())
@@ -510,7 +524,9 @@ pub fn build_with_reserve(
 ) -> Result<Vec<Value>, String> {
     s.validate()?;
     let geometry = geometry.filter(|_| s.island);
-    if geometry.is_some_and(|(width, shift, inset)| width <= 0 || shift > 0 || inset < 0) {
+    if geometry.is_some_and(|island| {
+        island.start_width <= 0 || island.tray_shift > 0 || island.search_inset < 0
+    }) {
         return Err("Invalid bottom island geometry for the shell profiles.".into());
     }
     let joined = geometry.is_some();
@@ -518,7 +534,7 @@ pub fn build_with_reserve(
         taskbar(s, joined, reserve)?,
         start_search(s, geometry),
         notifications(s, joined),
-        positions(s, geometry),
+        positions(geometry),
     ]
     .into_iter()
     .map(|map| serde_json::to_value(map).map_err(|err| err.to_string()))
@@ -528,6 +544,15 @@ pub fn build_with_reserve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn geometry(start_width: i32, tray_shift: i32, search_inset: i32) -> Geometry {
+        Some(BottomIsland {
+            start_width,
+            start_shift: -110,
+            tray_shift,
+            search_inset,
+        })
+    }
 
     fn styles(profile: &Value, selector: &str) -> Vec<String> {
         let fields = profile.as_object().unwrap();
@@ -613,7 +638,7 @@ mod tests {
                 ..Settings::default()
             },
         ] {
-            for geometry in [None, Some((560, -160, 17))] {
+            for geometry in [None, geometry(560, -160, 17)] {
                 let profiles = build(&s, geometry).unwrap();
                 assert_eq!(profiles.len(), IDS.len());
                 for (i, profile) in profiles.iter().enumerate() {
@@ -658,7 +683,7 @@ mod tests {
             transparency: 73,
             ..Settings::default()
         };
-        for geometry in [None, Some((545, -27, 17))] {
+        for geometry in [None, geometry(545, -27, 17)] {
             let profile = build(&settings, geometry).unwrap().remove(1);
             let surface = styles(&profile, SEARCH_SURFACE);
             assert!(surface[0].contains("TintOpacity=\"0.27\""));
@@ -697,10 +722,11 @@ mod tests {
             alignment: Alignment::Right,
             ..Settings::default()
         };
-        let result = build(&s, Some((568, -164, 28))).unwrap();
+        let result = build(&s, geometry(568, -164, 28)).unwrap();
         assert_eq!(result[3]["notificationCenter.horizontalShift"], "-164");
         assert_eq!(result[3]["actionCenter.horizontalAlignment"], "right");
-        assert_eq!(result[3]["startMenu.horizontalAlignment"], "right");
+        assert_eq!(result[3]["startMenu.horizontalAlignment"], "center");
+        assert_eq!(result[3]["startMenu.horizontalShift"], "-110");
         assert_eq!(styles(&result[1], START), ["Width=568", "MaxWidth=568"]);
         assert_eq!(
             styles(&result[1], SEARCH),
@@ -715,11 +741,12 @@ mod tests {
                 .unwrap()
                 .ends_with(",0,0")
         );
-        let limit = build(&s, Some((3000, 0, 0))).unwrap();
+        let limit = build(&s, geometry(3000, 0, 0)).unwrap();
         assert!(styles(&limit[1], START).contains(&format!("Width={START_MAX_DIP}")));
         assert!(styles(&limit[1], SEARCH).contains(&"Width=600".into()));
         assert!(
-            styles(&build(&s, Some((320, 0, 0))).unwrap()[1], START).contains(&"Width=320".into())
+            styles(&build(&s, geometry(320, 0, 0)).unwrap()[1], START)
+                .contains(&"Width=320".into())
         );
     }
 
@@ -784,7 +811,7 @@ mod tests {
             island: false,
             ..Settings::default()
         };
-        let result = build(&s, Some((600, -100, 12))).unwrap();
+        let result = build(&s, geometry(600, -100, 12)).unwrap();
         assert_eq!(result[0]["clickThroughTaskbar"], "0");
         assert_eq!(
             result[3]["notificationCenter.horizontalAlignment"],
@@ -792,8 +819,8 @@ mod tests {
         );
         assert_eq!(result[3]["notificationCenter.horizontalShift"], "0");
         assert!(build(&Settings { radius: 200, ..s }, None).is_err());
-        for invalid in [(0, 0, 0), (480, 1, 0), (480, 0, -1)] {
-            assert!(build(&Settings::default(), Some(invalid)).is_err());
+        for (width, shift, inset) in [(0, 0, 0), (480, 1, 0), (480, 0, -1)] {
+            assert!(build(&Settings::default(), geometry(width, shift, inset)).is_err());
         }
     }
 }

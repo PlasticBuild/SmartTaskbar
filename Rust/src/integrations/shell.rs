@@ -517,7 +517,12 @@ impl Host {
             if super::menu_open() {
                 return Ok(false);
             }
+            let refresh_outline = index == 0
+                && (!self.current[index].enabled || self.current[index].settings != *item);
             self.set(index, item, true)?;
+            if refresh_outline {
+                crate::desktop::taskbar_style_changed();
+            }
         }
         Ok(true)
     }

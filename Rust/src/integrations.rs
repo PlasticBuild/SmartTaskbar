@@ -20,7 +20,7 @@ mod search;
 mod shell;
 pub use shell::{configure_packaged_style, stop_packaged_style, verify_packaged_style};
 
-pub type Geometry = Option<(i32, i32, i32)>;
+use profiles::Geometry;
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Layout {
     pub geometry: Geometry,
@@ -68,7 +68,15 @@ fn send(update: Update) {
 }
 
 pub fn check_profiles(settings: &Settings) -> Result<(), String> {
-    for geometry in [None, Some((580, -108, 30))] {
+    for geometry in [
+        None,
+        Some(profiles::BottomIsland {
+            start_width: 580,
+            start_shift: -110,
+            tray_shift: -108,
+            search_inset: 30,
+        }),
+    ] {
         let items = profiles::build(settings, geometry)?;
         if items.len() != profiles::IDS.len()
             || items

@@ -185,6 +185,21 @@ impl Snapshot {
         self.baseline = baseline;
         Ok(())
     }
+    pub fn release_stale_compact_outline(&self) -> Result<bool, String> {
+        // Windhawk rebuilds the outline once the window has no foreign clip. Only
+        // remove the old styled shape if it is still the one on the visible bar.
+        if self.compact.is_some()
+            && self.owns()
+            && let Some(old) = &self.baseline
+            && let Some(current) = Region::read(self.bar.hwnd)?
+            && unsafe { EqualRgn(old.0, current.0) } != 0
+        {
+            Region::apply(self.bar.hwnd, None)?;
+            self.mark(OUTLINE, false);
+            return Ok(true);
+        }
+        Ok(false)
+    }
     pub fn raise(&self, on: bool) {
         if !self.owns() {
             return;

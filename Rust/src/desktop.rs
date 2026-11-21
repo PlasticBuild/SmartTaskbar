@@ -7,6 +7,7 @@ use crate::{
     join::Join,
     media::{self, Widget, Worker},
     policy::{self, Edge, HoverState, Rect, Slide},
+    profiles::{BottomIsland, Geometry},
     settings::Settings,
 };
 use lease::Snapshot;
@@ -66,33 +67,37 @@ pub fn inspect() -> Result<String, String> {
             lease::current_compact(bar)
         ));
     }
-    if let Some((width, shift, inset)) = primary_island() {
-        lines.push(format!("Primary bottom island uses a {width} DIP Start panel, a {shift} DIP flyout shift, and a {inset} DIP Search inset."));
+    if let Some(island) = primary_island() {
+        lines.push(format!("Primary bottom island uses a {} DIP Start panel shifted {} DIPs, a {} DIP tray shift, and a {} DIP Search inset.", island.start_width, island.start_shift, island.tray_shift, island.search_inset));
     }
     Ok(lines.join("\n"))
 }
 
-fn layout(bar: Bar, face: Option<Rect>) -> Option<(i32, i32, i32)> {
+fn layout(bar: Bar, face: Option<Rect>) -> Geometry {
     let face = face?;
     if !bar.display.primary || bar.strip.edge != Edge::Bottom {
         return None;
     }
-    let available = native::px_to_dip(bar.display.work.width(), bar.dpi);
-    let width = native::px_to_dip(
-        policy::anchored_start(bar.strip, face, 160, bar.dpi).width(),
-        bar.dpi,
-    )
-    .min(available);
-    let shift = (policy::SIDE_INSET_DIP
-        - native::px_to_dip(bar.display.work.right - face.right, bar.dpi))
-    .clamp((384 - available).min(0), 0);
+    let work = bar.display.work;
+    let available = native::px_to_dip(work.width(), bar.dpi);
+    let start = policy::anchored_start(bar.strip, face, 160, bar.dpi);
+    let start_width = native::px_to_dip(start.width(), bar.dpi).min(available);
+    let centered_left = work.left + (work.width() - start.width()) / 2;
+    let start_shift = native::px_to_dip(start.left - centered_left, bar.dpi);
+    let tray_shift = (policy::SIDE_INSET_DIP - native::px_to_dip(work.right - face.right, bar.dpi))
+        .clamp((384 - available).min(0), 0);
     let reclaimed =
         (bar.display.work.bottom - bar.strip.bounds.top).clamp(0, bar.strip.bounds.height());
     let search_inset = (native::px_to_dip(reclaimed, bar.dpi) - 18).max(0);
-    Some((width, shift, search_inset))
+    Some(BottomIsland {
+        start_width,
+        start_shift,
+        tray_shift,
+        search_inset,
+    })
 }
 
-pub fn primary_island() -> Option<(i32, i32, i32)> {
+pub fn primary_island() -> Geometry {
     let _dpi = DpiScope::enter();
     native::bars()
         .into_iter()
@@ -123,6 +128,7 @@ static DIRTY: AtomicBool = AtomicBool::new(false);
 static MEDIA_CHANGED: AtomicBool = AtomicBool::new(false);
 static TOPOLOGY_CHANGED: AtomicBool = AtomicBool::new(false);
 static SHELL_LAYOUT_CHANGED: AtomicBool = AtomicBool::new(false);
+static TASKBAR_STYLE_CHANGED: AtomicBool = AtomicBool::new(false);
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static OBSERVER_THREAD: AtomicU32 = AtomicU32::new(0);
@@ -133,6 +139,11 @@ pub fn style_changed() {
     if thread != 0 {
         unsafe { PostThreadMessageW(thread, STYLE_CHANGED, 0, 0) };
     }
+}
+
+pub fn taskbar_style_changed() {
+    TASKBAR_STYLE_CHANGED.store(true, Ordering::Relaxed);
+    style_changed();
 }
 
 unsafe extern "system" fn system_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -364,6 +375,7 @@ struct Managed {
     join: Join,
     media: Widget,
     reflow: Option<media::motion::Reflow>,
+    outline_needs_review: bool,
 }
 impl Managed {
     fn attach(bar: Bar, guard: &mut rescue::Monitor) -> Result<Option<Self>, String> {
@@ -403,6 +415,7 @@ impl Managed {
             join: Join::default(),
             media: Widget::default(),
             reflow: None,
+            outline_needs_review: false,
         }))
     }
     fn thickness(bar: Bar) -> i32 {
@@ -434,6 +447,7 @@ impl Managed {
             if face != self.snap.compact {
                 guard.refresh(bar.hwnd as usize)?;
                 self.snap.refresh_outline()?;
+                self.outline_needs_review = false;
             }
             // Explorer reapplied its resting region during a style switch or monitor change.
             if self.depth == 0 {
@@ -536,7 +550,18 @@ impl Managed {
             self.snap.raise(raise);
             self.raised = raise;
         }
-        Ok((visible && depth < full) || (!visible && depth > 0))
+        let mut outline_released = false;
+        if depth == full
+            && self.outline_needs_review
+            && !self.reflow.as_ref().is_some_and(|motion| motion.clipped)
+        {
+            self.outline_needs_review = false;
+            outline_released = self.snap.release_stale_compact_outline()?;
+            if outline_released {
+                SHELL_LAYOUT_CHANGED.store(true, Ordering::Relaxed);
+            }
+        }
+        Ok(outline_released || (visible && depth < full) || (!visible && depth > 0))
     }
 }
 impl Drop for Managed {
@@ -544,6 +569,20 @@ impl Drop for Managed {
         self.join.clear();
         self.snap.restore()
     }
+}
+
+fn measured_media_room(
+    bars: impl Iterator<Item = (i32, Option<i32>, u32)>,
+    media_length: i32,
+) -> bool {
+    let mut measured = bars
+        .filter_map(|(display, face, dpi)| {
+            face.map(|face| display - face >= (media_length + 24) * dpi as i32 / 96)
+        })
+        .peekable();
+    // A hidden or not-yet-laid-out bar supplies no measurement. Every measured
+    // bar must fit because Explorer shares these styles across displays.
+    measured.peek().is_some() && measured.all(|fits| fits)
 }
 
 #[derive(Default)]
@@ -635,26 +674,29 @@ impl Model {
                 (true, media::HORIZONTAL_DIPS, &mut reserve.horizontal),
                 (false, media::VERTICAL_DIPS, &mut reserve.vertical),
             ] {
-                let mut matching = self
+                let matching = self
                     .managed
                     .values()
-                    .filter(|m| m.snap.bar.strip.edge.horizontal() == horizontal)
-                    .peekable();
+                    .filter(|m| m.snap.bar.strip.edge.horizontal() == horizontal);
                 let previous = self.media_reserve.along(horizontal);
-                if matching.peek().is_some()
-                    && (previous == direction * length
-                        || matching.all(|m| {
-                            let bar = m.snap.bar;
-                            let px = (length + 24) * bar.dpi as i32 / 96;
-                            m.snap.compact.is_some_and(|face| {
-                                let free = if horizontal {
-                                    bar.strip.display.width() - face.width()
+                if (previous == direction * length && matching.clone().next().is_some())
+                    || measured_media_room(
+                        matching.map(|m| {
+                            let span = |rect: Rect| {
+                                if horizontal {
+                                    rect.width()
                                 } else {
-                                    bar.strip.display.height() - face.height()
-                                };
-                                free >= px
-                            })
-                        }))
+                                    rect.height()
+                                }
+                            };
+                            (
+                                span(m.snap.bar.strip.display),
+                                m.snap.compact.map(span),
+                                m.snap.bar.dpi,
+                            )
+                        }),
+                        length,
+                    )
                 {
                     *target = direction * length;
                 }
@@ -1003,7 +1045,13 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
             next_sync = now;
             next_scene = now;
         }
-        if SHELL_LAYOUT_CHANGED.swap(false, Ordering::Relaxed) {
+        let taskbar_style_changed = TASKBAR_STYLE_CHANGED.swap(false, Ordering::Relaxed);
+        if taskbar_style_changed {
+            for managed in model.managed.values_mut() {
+                managed.outline_needs_review = true;
+            }
+        }
+        if SHELL_LAYOUT_CHANGED.swap(false, Ordering::Relaxed) || taskbar_style_changed {
             next_sync = next_sync.min(now + 27);
         }
         if now >= next_sync {
@@ -1129,13 +1177,38 @@ mod tests {
     #[test]
     fn search_reserves_only_the_reclaimed_area_beyond_its_own_gutter() {
         let face = Some(Rect::new(-1550, 1712, -350, 1796));
-        assert_eq!(layout(bar(2880, 192, 1800), face), Some((600, -163, 30)));
-        assert_eq!(layout(bar(2880, 192, 1704), face), Some((600, -163, 0)));
+        assert_eq!(layout(bar(2880, 192, 1800), face).unwrap().search_inset, 30);
+        assert_eq!(layout(bar(2880, 192, 1704), face).unwrap().search_inset, 0);
     }
     #[test]
     fn start_fits_a_physically_narrow_screen_and_the_right_anchor_never_shifts_outward() {
         let face = Some(Rect::new(-350, 1712, -2, 1796));
-        assert_eq!(layout(bar(720, 192, 1800), face), Some((360, 0, 30)));
+        let island = layout(bar(720, 192, 1800), face).unwrap();
+        assert_eq!(island.start_width, 360);
+        assert_eq!(island.start_shift, 0);
+        assert_eq!(island.tray_shift, 0);
+    }
+
+    #[test]
+    fn start_follows_the_taskbar_when_the_media_player_shifts_the_island() {
+        let face = Some(Rect::new(-2110, 1712, -1210, 1796));
+        let island = layout(bar(2880, 192, 1800), face).unwrap();
+        assert_eq!(island.start_width, 450);
+        assert_eq!(island.start_shift, -110);
+    }
+
+    #[test]
+    fn an_unmeasured_secondary_bar_does_not_block_media_on_the_primary_island() {
+        let fit = (2880, Some(1135), 192);
+        let hidden = (2880, None, 192);
+        let narrow = (1280, Some(1100), 192);
+        let length = media::HORIZONTAL_DIPS;
+        assert!(measured_media_room([fit, hidden].into_iter(), length));
+        assert!(!measured_media_room([hidden].into_iter(), length));
+        assert!(!measured_media_room(
+            [fit, narrow, hidden].into_iter(),
+            length
+        ));
     }
 }
 #[test]
