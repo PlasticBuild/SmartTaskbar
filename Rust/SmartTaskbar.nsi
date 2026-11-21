@@ -13,8 +13,6 @@ ${StrStr}
 
 Name "${PRODUCT}"
 OutFile "${OUTPUT}"
-Icon "${ICON}"
-UninstallIcon "${ICON}"
 InstallDir "$LOCALAPPDATA\Programs\SmartTaskbar"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
@@ -24,6 +22,7 @@ VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "SmartTaskbar"
 VIAddVersionKey "FileDescription" "SmartTaskbar Windows 11 Setup"
 VIAddVersionKey "FileVersion" "${VERSION}"
+VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "SmartTaskbar contributors. See included license notices."
 
 Var Existing
@@ -33,6 +32,8 @@ Var ReplaceStyle
 Var Reason
 
 !define MUI_ABORTWARNING
+!define MUI_ICON "${ICON}"
+!define MUI_UNICON "${ICON}"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_COMPONENTS
 !define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPage
@@ -218,20 +219,20 @@ Section "SmartTaskbar (required)" Application
         RMDir /r "$Stage"
         WriteRegStr HKCU "${UNINSTALL}" "DisplayName" "${PRODUCT}"
         WriteRegStr HKCU "${UNINSTALL}" "DisplayVersion" "${VERSION}"
-        WriteRegStr HKCU "${UNINSTALL}" "DisplayIcon" '"$INSTDIR\Uninstall.exe",0'
+        WriteRegStr HKCU "${UNINSTALL}" "DisplayIcon" '"$INSTDIR\${APP}",0'
         WriteRegStr HKCU "${UNINSTALL}" "InstallLocation" "$INSTDIR"
         WriteRegStr HKCU "${UNINSTALL}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
         WriteRegStr HKCU "${UNINSTALL}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
         WriteRegDWORD HKCU "${UNINSTALL}" "NoModify" 1
         WriteRegDWORD HKCU "${UNINSTALL}" "NoRepair" 1
-        CreateShortcut "$SMPROGRAMS\SmartTaskbar.lnk" "$INSTDIR\${APP}" "--settings" "$INSTDIR\Uninstall.exe"
+        CreateShortcut "$SMPROGRAMS\SmartTaskbar.lnk" "$INSTDIR\${APP}" "--settings" "$INSTDIR\${APP}"
         Delete "$SMPROGRAMS\SmartTaskbar Rust.lnk"
         Delete "$DESKTOP\SmartTaskbar Rust.lnk"
         Exec '"$INSTDIR\${APP}" --run'
 SectionEnd
 
 Section "Desktop shortcut" DesktopShortcut
-    CreateShortcut "$DESKTOP\SmartTaskbar.lnk" "$INSTDIR\${APP}" "--settings" "$INSTDIR\Uninstall.exe"
+    CreateShortcut "$DESKTOP\SmartTaskbar.lnk" "$INSTDIR\${APP}" "--settings" "$INSTDIR\${APP}"
 SectionEnd
 
 Function un.onInit

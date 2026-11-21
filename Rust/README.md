@@ -32,7 +32,7 @@ Turn on **Show taskbar media player**, choose **Media player side**, and select 
 
 ## Build and stage
 
-From the Rust folder, run `./Build.ps1 test` and `./Stage.ps1 -StyleRoot <portable-Windhawk-folder>`. The build uses the project’s portable Rust toolchain or an available Rust MSVC toolchain and Visual C++ linker. Caches and release artifacts go under the project’s `bin` folder. The stage script places the executable, notices and path to the style host in `bin/rust-preview`. Add `-CreateShortcuts` when installing the Rust version to create separate Desktop and Start menu shortcuts.
+From the Rust folder, run `./Build.ps1 test` and `./Stage.ps1 -StyleRoot <portable-Windhawk-folder>`. The build uses the project’s portable Rust toolchain or an available Rust MSVC toolchain, Visual C++ linker, and Windows SDK resource compiler. Set `RC` to the resource compiler’s path if it is installed outside the SDK locations. Caches and release artifacts go under the project’s `bin` folder. The stage script places the executable, notices and path to the style host in `bin/rust-preview`. Add `-CreateShortcuts` to create Desktop and Start menu shortcuts.
 
 Build the per-user installer with `./Installer.ps1 -StyleRoot <prepared-portable-Windhawk-folder> -Compiler <path-to-makensis.exe>`. It outputs `bin/installer/SmartTaskbar-Setup.exe`. The package includes the four versioned Windhawk modules with their source and notices. It configures shell paths on the destination PC during installation.
 

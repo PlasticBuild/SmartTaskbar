@@ -297,6 +297,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
         let wc = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
+            hIcon: LoadIconW(instance, std::ptr::without_provenance(1)),
             hCursor: LoadCursorW(null_mut(), IDC_ARROW),
             lpszClassName: class.as_ptr(),
             ..mem::zeroed()

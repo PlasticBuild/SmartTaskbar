@@ -43,8 +43,9 @@ if((Get-FileHash -LiteralPath $binary).Hash -ne (Get-FileHash -LiteralPath $comp
 if ($CreateShortcuts) {
     $shell=New-Object -ComObject WScript.Shell
     foreach($folder in 'DesktopDirectory','Programs'){
-        $shortcut=$shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath($folder)) 'SmartTaskbar Rust.lnk'))
+        $shortcut=$shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath($folder)) 'SmartTaskbar.lnk'))
         $shortcut.TargetPath=$binary
+        $shortcut.IconLocation="$binary,0"
         $shortcut.Arguments='--settings'
         $shortcut.WorkingDirectory=$out
         $shortcut.Save()
