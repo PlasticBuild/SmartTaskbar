@@ -424,6 +424,7 @@ fn background_class(class: &str) -> bool {
 #[derive(Default)]
 pub(super) struct Scene {
     pub windows: Vec<WindowSample>,
+    pub foreground_fullscreen: Option<Rect>,
     pub menus: Vec<Rect>,
     pub panels: Vec<Panel>,
     pub context_menus: Vec<(usize, Rect)>,
@@ -599,10 +600,19 @@ pub(super) fn scene(names: &mut ProcessNames) -> Scene {
             }
         }
         if let Some(home) = display_for(h) {
+            let maximized = unsafe { IsZoomed(h) } != 0;
+            if h == fg && bounds.intersection(home.bounds) == Some(home.bounds) {
+                // A regular maximized window can fill the monitor after we reclaim the work area.
+                let style = unsafe { GetWindowLongW(h, GWL_STYLE) } as u32;
+                let framed = style & WS_CAPTION == WS_CAPTION || style & WS_THICKFRAME != 0;
+                if !maximized || !framed {
+                    out.foreground_fullscreen = Some(home.bounds);
+                }
+            }
             out.windows.push(WindowSample {
                 bounds,
                 home: home.bounds,
-                maximized: unsafe { IsZoomed(h) } != 0,
+                maximized,
             });
         }
     }

@@ -221,6 +221,13 @@ pub struct PointerFrame {
     pub now_ms: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Cover {
+    Clear,
+    Overlap,
+    ForegroundFullscreen,
+}
+
 impl HoverState {
     /// One instance per taskbar. The hot band always lies on its own side of a monitor seam.
     pub fn update(
@@ -229,7 +236,7 @@ impl HoverState {
         reveal: Reveal,
         displays: &[Rect],
         frame: PointerFrame,
-        covered: bool,
+        cover: Cover,
         menu_open: bool,
     ) -> bool {
         let BarInput { bar, island, dpi } = surface;
@@ -242,10 +249,10 @@ impl HoverState {
             };
         }
         let previous = self.previous.replace(cursor);
-        if !covered {
+        if cover != Cover::Overlap {
             self.entered_at = None;
             self.peek_until = None;
-            return true;
+            return cover == Cover::Clear;
         }
         let grace = now_ms.saturating_add(320);
         if menu_open {
@@ -611,7 +618,7 @@ mod tests {
                     cursor: Point { x: 12, y },
                     now_ms,
                 },
-                true,
+                Cover::Overlap,
                 false,
             )
         };
@@ -645,7 +652,7 @@ mod tests {
                     cursor: Point { x, y },
                     now_ms,
                 },
-                true,
+                Cover::Overlap,
                 false,
             )
         };
@@ -679,7 +686,7 @@ mod tests {
                     cursor: Point { x, y },
                     now_ms,
                 },
-                true,
+                Cover::Overlap,
                 false,
             )
         };
@@ -701,7 +708,7 @@ mod tests {
             island: None,
             dpi: 96,
         };
-        let mut visible = |now_ms, covered, menu| {
+        let mut visible = |now_ms, cover, menu| {
             hover.update(
                 input,
                 Reveal {
@@ -710,15 +717,51 @@ mod tests {
                 },
                 &[LOWER],
                 PointerFrame { cursor: p, now_ms },
-                covered,
+                cover,
                 menu,
             )
         };
-        assert!(visible(0, true, true));
-        assert!(visible(1000, true, true));
-        assert!(visible(1100, true, false));
-        assert!(!visible(1500, true, false));
-        assert!(visible(1501, false, false));
+        assert!(visible(0, Cover::Overlap, true));
+        assert!(visible(1000, Cover::Overlap, true));
+        assert!(visible(1100, Cover::Overlap, false));
+        assert!(!visible(1500, Cover::Overlap, false));
+        assert!(visible(1501, Cover::Clear, false));
+    }
+
+    #[test]
+    fn foreground_fullscreen_blocks_edge_reveal_and_clears_pending_hover() {
+        let mut hover = HoverState::default();
+        let input = BarInput {
+            bar: dock(LOWER, Edge::Bottom),
+            island: None,
+            dpi: 96,
+        };
+        let reveal = Reveal {
+            outside_ms: 120,
+            ..Reveal::default()
+        };
+        let mut visible = |now_ms, cover, menu| {
+            hover.update(
+                input,
+                reveal,
+                &[UPPER, LOWER],
+                PointerFrame {
+                    cursor: Point {
+                        x: LOWER.left + LOWER.width() / 2,
+                        y: LOWER.bottom - 1,
+                    },
+                    now_ms,
+                },
+                cover,
+                menu,
+            )
+        };
+        assert!(!visible(0, Cover::Overlap, false));
+        assert!(visible(120, Cover::Overlap, false));
+        assert!(!visible(121, Cover::ForegroundFullscreen, true));
+        assert!(!visible(1000, Cover::ForegroundFullscreen, false));
+        assert!(!visible(1001, Cover::Overlap, false));
+        assert!(visible(1121, Cover::Overlap, false));
     }
 
     #[test]

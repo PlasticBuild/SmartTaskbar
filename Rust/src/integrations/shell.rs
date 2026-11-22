@@ -513,8 +513,8 @@ impl Host {
             let refresh_outline = index == 0
                 && (!self.current[index].enabled || self.current[index].settings != *item);
             self.set(index, item, true)?;
-            if refresh_outline {
-                crate::desktop::taskbar_style_changed();
+            if index == 0 {
+                crate::desktop::taskbar_style_applied(settings.island, refresh_outline);
             }
         }
         Ok(true)
@@ -526,6 +526,9 @@ impl Host {
         self.current = self.read_current()?;
         for (index, m) in self.original.modules.clone().into_iter().enumerate() {
             self.set(index, &m.settings, m.enabled)?;
+            if index == 0 {
+                crate::desktop::taskbar_style_restored();
+            }
         }
         if self
             .read_current()?

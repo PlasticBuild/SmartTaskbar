@@ -125,6 +125,7 @@ static MEDIA_CHANGED: AtomicBool = AtomicBool::new(false);
 static TOPOLOGY_CHANGED: AtomicBool = AtomicBool::new(false);
 static SHELL_LAYOUT_CHANGED: AtomicBool = AtomicBool::new(false);
 static TASKBAR_STYLE_CHANGED: AtomicBool = AtomicBool::new(false);
+static ISLAND_STYLER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static OBSERVER_THREAD: AtomicU32 = AtomicU32::new(0);
@@ -137,9 +138,16 @@ pub fn style_changed() {
     }
 }
 
-pub fn taskbar_style_changed() {
-    TASKBAR_STYLE_CHANGED.store(true, Ordering::Relaxed);
-    style_changed();
+pub fn taskbar_style_applied(island: bool, refresh_outline: bool) {
+    ISLAND_STYLER_ACTIVE.store(island, Ordering::Relaxed);
+    if refresh_outline {
+        TASKBAR_STYLE_CHANGED.store(true, Ordering::Relaxed);
+        style_changed();
+    }
+}
+
+pub fn taskbar_style_restored() {
+    ISLAND_STYLER_ACTIVE.store(false, Ordering::Relaxed);
 }
 
 unsafe extern "system" fn system_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -704,6 +712,7 @@ impl Model {
                     let bar = managed.snap.bar;
                     let horizontal = bar.strip.edge.horizontal();
                     if reserve.along(horizontal) != self.media_reserve.along(horizontal)
+                        && self.scene.foreground_fullscreen != Some(bar.strip.display)
                         && managed.reflow.is_none()
                         && managed.depth == Managed::thickness(bar)
                         && let Some(face) = managed.snap.compact
@@ -726,6 +735,7 @@ impl Model {
         }
         for m in self.managed.values_mut() {
             let bar = m.snap.bar.strip;
+            let fullscreen = self.scene.foreground_fullscreen == Some(bar.display);
             let reveal = settings.reveal(
                 self.monitors
                     .iter()
@@ -737,53 +747,65 @@ impl Model {
             } else {
                 None
             };
-            let covered = policy::is_covered(bar, face, &self.scene.windows);
+            let cover = if fullscreen {
+                policy::Cover::ForegroundFullscreen
+            } else if policy::is_covered(bar, face, &self.scene.windows) {
+                policy::Cover::Overlap
+            } else {
+                policy::Cover::Clear
+            };
             let panel = self
                 .scene
                 .panels
                 .iter()
-                .find(|p| p.monitor == bar.display)
+                .find(|p| !fullscreen && p.monitor == bar.display)
                 .copied();
-            // Use the hit-tested fallback only when the pointer could plausibly be
-            // interacting with a revealed bar or a thumbnail already in hand.
-            let hovered_thumbnail = if panel.is_none()
-                && (m.depth > 0 || m.thumbnail_hover.is_some())
-                && (covered || !self.scene.thumbnail_groups.is_empty())
-            {
-                *thumbnail.get_or_insert_with(|| {
-                    cursor.and_then(|p| native::hovered_thumbnail(p, self.shell))
-                })
+            let menu = if fullscreen {
+                m.thumbnail_hover = None;
+                m.last_face = None;
+                m.context = None;
+                false
             } else {
-                None
-            };
-            let thumbnail_held = cursor.is_some_and(|point| {
-                grouped_thumbnail_hold(
+                // Hit-test thumbnails only when the bar or a thumbnail can already be in use.
+                let hovered_thumbnail = if panel.is_none()
+                    && (m.depth > 0 || m.thumbnail_hover.is_some())
+                    && (cover == policy::Cover::Overlap || !self.scene.thumbnail_groups.is_empty())
+                {
+                    *thumbnail.get_or_insert_with(|| {
+                        cursor.and_then(|p| native::hovered_thumbnail(p, self.shell))
+                    })
+                } else {
+                    None
+                };
+                let thumbnail_held = cursor.is_some_and(|point| {
+                    grouped_thumbnail_hold(
+                        bar.display,
+                        &self.scene.thumbnail_groups,
+                        point,
+                        now,
+                        &mut m.thumbnail_hover,
+                    )
+                });
+                let shell_menu = panel.is_some()
+                    || self.scene.menus.contains(&bar.display)
+                    || thumbnail_held
+                    || hovered_thumbnail == Some(bar.display);
+                let under_cursor = cursor.is_some_and(|p| face.unwrap_or(bar.bounds).contains(p));
+                if (m.depth > 0 && under_cursor) || shell_menu || m.menu.is_some() {
+                    m.last_face = Some(now);
+                }
+                // Keep tray app context menus tied to the bar the pointer just left.
+                m.context = related_context(
                     bar.display,
-                    &self.scene.thumbnail_groups,
-                    point,
-                    now,
-                    &mut m.thumbnail_hover,
-                )
-            });
-            let shell_menu = panel.is_some()
-                || self.scene.menus.contains(&bar.display)
-                || thumbnail_held
-                || hovered_thumbnail == Some(bar.display);
-            let under_cursor = cursor.is_some_and(|p| face.unwrap_or(bar.bounds).contains(p));
-            if (m.depth > 0 && under_cursor) || shell_menu || m.menu.is_some() {
-                m.last_face = Some(now);
-            }
-            // Tray apps can own their own context menu. Associate it with the bar the user just
-            // left and retain that association after the pointer moves up into the popup.
-            m.context = related_context(
-                bar.display,
-                &self.scene.context_menus,
-                m.context,
-                m.last_face
-                    .is_some_and(|last| now.saturating_sub(last) <= 400),
-            );
-            let menu = shell_menu || m.context.is_some();
-            let media_hold = track.is_some() && cursor.is_some_and(|p| m.media.holds(p));
+                    &self.scene.context_menus,
+                    m.context,
+                    m.last_face
+                        .is_some_and(|last| now.saturating_sub(last) <= 400),
+                );
+                shell_menu || m.context.is_some()
+            };
+            let media_hold =
+                !fullscreen && track.is_some() && cursor.is_some_and(|p| m.media.holds(p));
             let surface = policy::BarInput {
                 bar,
                 island: face,
@@ -794,13 +816,13 @@ impl Model {
                 now_ms: now,
             });
             // The lock screen or a secure input desktop can deny GetCursorPos. Release the bar.
-            let visible = pointer.is_none_or(|p| {
+            let visible = pointer.map_or(!fullscreen, |p| {
                 m.hover.update(
                     surface,
                     reveal,
                     &self.displays,
                     p,
-                    covered,
+                    cover,
                     menu || media_hold,
                 )
             });
@@ -812,7 +834,7 @@ impl Model {
             let animating = m.draw(
                 settings,
                 visible,
-                cursor.is_some() && (menu || (covered && visible)),
+                cursor.is_some() && (menu || (cover == policy::Cover::Overlap && visible)),
                 now,
             )?;
             let active_panel = panel.map(|p| p.hwnd as usize);
@@ -874,7 +896,7 @@ impl Model {
                 delay = 16;
                 stationary_can_wait = false;
             } else if let Some(point) = cursor {
-                if covered {
+                if cover == policy::Cover::Overlap {
                     // Read the cursor at animation cadence near the edge. Most of
                     // a maximized session spends its time well away from the bar.
                     let interval =

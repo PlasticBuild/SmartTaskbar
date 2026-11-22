@@ -1,6 +1,7 @@
 use super::native::{self, Bar};
 use crate::policy::{Edge, Rect};
 use std::ptr::null_mut;
+use std::sync::atomic::Ordering;
 use windows_sys::Win32::{Foundation::*, Graphics::Gdi::*, UI::WindowsAndMessaging::*};
 
 const OWNER: *const u16 = windows_sys::w!("SmartTaskbarRust.31a9.RegionOwner");
@@ -8,6 +9,7 @@ const CHANGES: *const u16 = windows_sys::w!("SmartTaskbarRust.31a9.Changes");
 const OUTLINE: usize = 1;
 const WORK: usize = 2;
 const Z_ORDER: usize = 4;
+const STYLER_OUTLINE: usize = 8;
 
 pub(super) struct Region(HRGN);
 impl Drop for Region {
@@ -36,6 +38,9 @@ impl Region {
         let kind = unsafe { GetRgnBox(self.0, &mut r) };
         (kind > NULLREGION).then(|| native::rect(r))
     }
+    fn same_shape(&self, other: &Self) -> bool {
+        unsafe { EqualRgn(self.0, other.0) != 0 }
+    }
     fn read(h: HWND) -> Result<Option<Self>, String> {
         let r = Self::rect(Rect::default())?;
         Ok((unsafe { GetWindowRgn(h, r.0) } != ERROR).then_some(r))
@@ -57,6 +62,7 @@ impl Region {
 pub(super) struct Snapshot {
     pub bar: Bar,
     baseline: Option<Region>,
+    temporary_clip: Option<Region>,
     pub compact: Option<Rect>,
     work_target: Option<Rect>,
     was_topmost: bool,
@@ -78,6 +84,7 @@ impl Snapshot {
         Ok(Self {
             bar,
             baseline,
+            temporary_clip: None,
             compact,
             work_target,
             was_topmost,
@@ -138,16 +145,24 @@ impl Snapshot {
         }
         let changed = unsafe { GetPropW(self.bar.hwnd, CHANGES) } as usize;
         let current = native::bar_info(self.bar.hwnd, self.bar.pid);
-        // A changed monitor or shell layout owns its new dimensions.
-        if current.is_some_and(|b| b.strip == self.bar.strip) {
-            if changed & OUTLINE != 0 {
-                let copy = self.baseline_copy().ok().flatten();
-                if Region::apply(self.bar.hwnd, copy).is_err() {
-                    let _ = Region::apply(self.bar.hwnd, None);
-                }
+        if changed & OUTLINE != 0
+            && self.temporary_clip.as_ref().is_none_or(|clip| {
+                Region::read(self.bar.hwnd).map_or(true, |current| {
+                    current.is_some_and(|region| clip.same_shape(&region))
+                })
+            })
+        {
+            // Windhawk rebuilds styled islands from the current shell layout.
+            let original = if changed & STYLER_OUTLINE == 0
+                && current.is_some_and(|b| b.strip == self.bar.strip)
+            {
+                self.baseline_copy().ok().flatten()
+            } else {
+                None
+            };
+            if Region::apply(self.bar.hwnd, original).is_err() {
+                let _ = Region::apply(self.bar.hwnd, None);
             }
-        } else if changed & OUTLINE != 0 {
-            let _ = Region::apply(self.bar.hwnd, None);
         }
         if changed & WORK != 0
             && let Some(current) = current
@@ -192,10 +207,10 @@ impl Snapshot {
             && self.owns()
             && let Some(old) = &self.baseline
             && let Some(current) = Region::read(self.bar.hwnd)?
-            && unsafe { EqualRgn(old.0, current.0) } != 0
+            && old.same_shape(&current)
         {
             Region::apply(self.bar.hwnd, None)?;
-            self.mark(OUTLINE, false);
+            self.mark(OUTLINE | STYLER_OUTLINE, false);
             return Ok(true);
         }
         Ok(false)
@@ -229,14 +244,35 @@ impl Snapshot {
             self.mark(Z_ORDER, false);
         }
     }
-    pub fn apply(&self, depth: i32, full: i32) -> Result<(), String> {
+    pub fn apply(&mut self, depth: i32, full: i32) -> Result<(), String> {
         if !self.owns() {
             return Err("Explorer replaced the taskbar while its outline was changing.".into());
         }
         let strip = self.bar.strip.bounds;
+        let previous = unsafe { GetPropW(self.bar.hwnd, CHANGES) } as usize;
+        let use_styler =
+            super::ISLAND_STYLER_ACTIVE.load(Ordering::Relaxed) || previous & STYLER_OUTLINE != 0;
         if depth == full {
-            Region::apply(self.bar.hwnd, self.baseline_copy()?)?;
-            self.mark(OUTLINE, false);
+            let current = Region::read(self.bar.hwnd)?;
+            if current.as_ref().is_some_and(|region| {
+                region.bounds().is_none()
+                    || self
+                        .temporary_clip
+                        .as_ref()
+                        .is_some_and(|clip| clip.same_shape(region))
+            }) {
+                // Clearing our temporary clip triggers Windhawk's window-position handler
+                // to rebuild the island around the current task buttons and system tray.
+                let visible = if use_styler {
+                    None
+                } else {
+                    self.baseline_copy()?
+                };
+                Region::apply(self.bar.hwnd, visible)?;
+            }
+            self.temporary_clip = None;
+            self.mark(OUTLINE | STYLER_OUTLINE, false);
+            super::SHELL_LAYOUT_CHANGED.store(true, Ordering::Relaxed);
             return Ok(());
         }
         let clip = Region::rect(edge_clip(
@@ -250,10 +286,13 @@ impl Snapshot {
         {
             return Err("Could not preserve the native taskbar shape.".into());
         }
-        if !self.mark(OUTLINE, true) {
+        let temporary_clip = clip.duplicate()?;
+        if !self.mark(OUTLINE, true) || !self.mark(STYLER_OUTLINE, use_styler) {
             return Err("Could not record taskbar outline recovery.".into());
         }
-        Region::apply(self.bar.hwnd, Some(clip))
+        Region::apply(self.bar.hwnd, Some(clip))?;
+        self.temporary_clip = Some(temporary_clip);
+        Ok(())
     }
 }
 
