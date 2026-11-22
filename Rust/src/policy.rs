@@ -189,7 +189,7 @@ pub fn activation_band(bar: NativeBar, island: Option<Rect>, zone: Zone, dpi: u3
         ),
     };
     let mut band = bar.edge.with_span(bar.display, start, end);
-    let depth = pixels(6, dpi).max(1);
+    let depth = pixels(12, dpi).max(1);
     match bar.edge {
         Edge::Left => band.right = band.left.saturating_add(depth).min(band.right),
         Edge::Right => band.left = band.right.saturating_sub(depth).max(band.left),
@@ -591,12 +591,12 @@ mod tests {
                 } else {
                     entire.width()
                 },
-                12
+                24
             );
         }
         assert_eq!(
             activation_band(dock(LOWER, Edge::Bottom), None, Zone::Entire, 0).height(),
-            6
+            12
         );
     }
 

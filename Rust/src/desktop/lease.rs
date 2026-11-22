@@ -6,6 +6,7 @@ use windows_sys::Win32::{Foundation::*, Graphics::Gdi::*, UI::WindowsAndMessagin
 
 const OWNER: *const u16 = windows_sys::w!("SmartTaskbarRust.31a9.RegionOwner");
 const CHANGES: *const u16 = windows_sys::w!("SmartTaskbarRust.31a9.Changes");
+const ISLAND_SPAN: *const u16 = windows_sys::w!("SmartTaskbarRust.31a9.IslandSpan");
 const OUTLINE: usize = 1;
 const WORK: usize = 2;
 const Z_ORDER: usize = 4;
@@ -134,6 +135,7 @@ impl Snapshot {
         if unsafe { SetPropW(self.bar.hwnd, OWNER, self.owner as usize as HANDLE) } == 0 {
             return Err("Explorer refused a recoverable taskbar session.".into());
         }
+        self.publish_island_span();
         Ok(())
     }
     fn baseline_copy(&self) -> Result<Option<Region>, String> {
@@ -184,6 +186,7 @@ impl Snapshot {
             self.raise(false);
         }
         unsafe {
+            RemovePropW(self.bar.hwnd, ISLAND_SPAN);
             RemovePropW(self.bar.hwnd, CHANGES);
             RemovePropW(self.bar.hwnd, OWNER)
         };
@@ -198,7 +201,33 @@ impl Snapshot {
             .and_then(Region::bounds)
             .and_then(|r| compact_bounds(self.bar, r));
         self.baseline = baseline;
+        self.publish_island_span();
         Ok(())
+    }
+    fn publish_island_span(&self) {
+        // Settings runs in a separate process and cannot read the island from a fully clipped bar.
+        let strip = self.bar.strip;
+        let span = self.compact.and_then(|face| {
+            let (start, end) = if strip.edge.horizontal() {
+                (
+                    face.left - strip.bounds.left,
+                    face.right - strip.bounds.left,
+                )
+            } else {
+                (face.top - strip.bounds.top, face.bottom - strip.bounds.top)
+            };
+            Some(
+                (usize::from(u16::try_from(end).ok()?) << 16)
+                    | usize::from(u16::try_from(start).ok()?),
+            )
+        });
+        unsafe {
+            if let Some(span) = span {
+                SetPropW(self.bar.hwnd, ISLAND_SPAN, span as HANDLE);
+            } else {
+                RemovePropW(self.bar.hwnd, ISLAND_SPAN);
+            }
+        }
     }
     pub fn release_stale_compact_outline(&self) -> Result<bool, String> {
         // Windhawk rebuilds the outline once the window has no foreign clip. Only
@@ -298,6 +327,18 @@ impl Snapshot {
 
 pub(super) fn current_compact(bar: Bar) -> Option<Rect> {
     compact_bounds(bar, Region::read(bar.hwnd).ok()??.bounds()?)
+}
+pub(super) fn preview_compact(bar: Bar) -> Option<Rect> {
+    let span = unsafe { GetPropW(bar.hwnd, ISLAND_SPAN) } as usize;
+    let start = (span & 0xffff) as i32;
+    let end = (span >> 16) as i32;
+    let r = bar.strip.bounds;
+    let cached = if bar.strip.edge.horizontal() {
+        Rect::new(r.left + start, r.top, r.left + end, r.bottom)
+    } else {
+        Rect::new(r.left, r.top + start, r.right, r.top + end)
+    };
+    current_compact(bar).or_else(|| (r.intersection(cached) == Some(cached)).then_some(cached))
 }
 pub(super) fn region_empty(bar: Bar) -> bool {
     Region::read(bar.hwnd)

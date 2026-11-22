@@ -32,6 +32,35 @@ pub fn monitor_choices() -> Vec<Monitor> {
     native::monitors()
 }
 
+pub(crate) fn activation_preview(
+    settings: &Settings,
+    monitors: &[Monitor],
+    selected: Option<&str>,
+) -> Vec<Rect> {
+    native::bars()
+        .into_iter()
+        .filter_map(|bar| {
+            let id = monitors
+                .iter()
+                .find(|m| m.bounds == bar.strip.display)
+                .map(|m| m.id.as_str());
+            if selected.is_some() && selected != id {
+                return None;
+            }
+            let face = settings
+                .island
+                .then(|| lease::preview_compact(bar))
+                .flatten();
+            Some(policy::activation_band(
+                bar.strip,
+                face,
+                settings.reveal(id).zone,
+                bar.dpi,
+            ))
+        })
+        .collect()
+}
+
 struct DpiScope(DPI_AWARENESS_CONTEXT);
 impl DpiScope {
     fn enter() -> Self {

@@ -29,6 +29,8 @@ use windows_sys::Win32::{
 
 #[path = "appearance/preview.rs"]
 mod preview;
+#[path = "appearance/zone_preview.rs"]
+mod zone_preview;
 use preview::Paint;
 const LAYOUT: u16 = 101;
 const ALIGN: u16 = 102;
@@ -63,6 +65,7 @@ const ICON_TIMER: usize = 2;
 const UPDATE_TIMER: usize = 3;
 const ENGINE_TIMER: usize = 4;
 const REDIRECT_TIMER: usize = 5;
+const REFRESH_ZONE_PREVIEW: u32 = WM_APP + 8;
 const LABEL: u16 = 1000;
 const HEADER_HEIGHT: i32 = 100;
 const TBM_GETPOS: u32 = WM_USER;
@@ -372,6 +375,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
         }
         ShowWindow(hwnd, SW_SHOWNORMAL);
         check_updates(hwnd, &mut *state);
+        let mut zone_preview = zone_preview::Overlay::default();
         let mut msg: MSG = mem::zeroed();
         loop {
             let r = GetMessageW(&mut msg, null_mut(), 0, 0);
@@ -380,6 +384,25 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             }
             if r == 0 {
                 break;
+            }
+            if msg.hwnd == hwnd && msg.message == REFRESH_ZONE_PREVIEW {
+                let editing_zone = state.tab == Tab::Appearance
+                    && GetForegroundWindow() == hwnd
+                    && IsIconic(hwnd) == 0
+                    && [ZONE, MONITOR]
+                        .iter()
+                        .any(|id| GetFocus() == GetDlgItem(hwnd, i32::from(*id)));
+                let bands = if editing_zone {
+                    crate::desktop::activation_preview(
+                        &state.draft,
+                        &state.monitors,
+                        state.monitor.as_deref(),
+                    )
+                } else {
+                    Vec::new()
+                };
+                zone_preview.show(hwnd, bands);
+                continue;
             }
             let prior = GetFocus();
             if IsDialogMessageW(hwnd, &msg) == 0 {
@@ -454,12 +477,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 limits.ptMinTrackSize.y = 280 * (*ptr).dpi / 96;
                 0
             }
-            WM_ACTIVATE if (*ptr).ready && (wp & 0xffff) != WA_INACTIVE as usize => {
-                if (*ptr).tab == Tab::Appearance && (*ptr).paint.refresh_icons() {
-                    SetTimer(hwnd, ICON_TIMER, 90, None);
+            WM_ACTIVATE if (*ptr).ready => {
+                PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
+                if (wp & 0xffff) != WA_INACTIVE as usize {
+                    if (*ptr).tab == Tab::Appearance && (*ptr).paint.refresh_icons() {
+                        SetTimer(hwnd, ICON_TIMER, 90, None);
+                    }
+                    sync_engine(hwnd, ptr);
+                    redraw(hwnd);
                 }
-                sync_engine(hwnd, ptr);
-                redraw(hwnd);
                 0
             }
             WM_PAINT => {
@@ -477,12 +503,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_DISPLAYCHANGE if (*ptr).ready => {
                 (*ptr).monitors = crate::desktop::monitor_choices();
                 monitor_controls(hwnd, ptr);
+                PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
                 0
             }
             WM_NOTIFY if (*ptr).ready && lp != 0 => {
                 let note = &*(lp as *const NMHDR);
                 if note.idFrom == TABS as usize && note.code == TCN_SELCHANGE {
                     switch_tab(hwnd, ptr);
+                    PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
                 }
                 0
             }
@@ -534,6 +562,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         RELEASES | REPOSITORY => open_github(hwnd, ptr, id),
                         _ => {}
                     }
+                }
+                if matches!(id, ZONE | MONITOR | OVERRIDE | APPLY) {
+                    PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
                 }
                 0
             }
