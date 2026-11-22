@@ -118,7 +118,7 @@ impl Hover {
             return self.pending.as_ref().map(|_| 32);
         };
         self.menu_hook
-            .track(Some((bar.hwnd, area, surface.occupied.clone())));
+            .track(Some((&bar, area, surface.occupied.clone())));
         if !settings.show_app_labels {
             self.entered = None;
             self.window.hide();

@@ -57,7 +57,7 @@ fn taskbar_brush(s: &Settings) -> String {
 }
 
 fn corner(s: &Settings, joined: bool) -> String {
-    let r = (s.radius + 6).clamp(8, 24);
+    let r = s.radius;
     if joined {
         format!("CornerRadius={r},{r},0,0")
     } else {
@@ -715,7 +715,8 @@ mod tests {
         );
         let overflow = styles(taskbar, "Border#OverflowFlyoutBackgroundBorder");
         assert!(overflow[0].contains("TintOpacity=\"0.80\""));
-        assert_eq!(overflow[3], "CornerRadius=18");
+        assert_eq!(overflow[3], "CornerRadius=12");
+        assert_eq!(styles(taskbar, "MenuFlyoutPresenter"), ["CornerRadius=12"]);
         assert_eq!(result[3]["startMenu.horizontalAlignment"], "windowsDefault");
         assert!(!result[1].as_object().unwrap().values().any(|v| v == START));
         let reduced = build(

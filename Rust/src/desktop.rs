@@ -185,9 +185,6 @@ pub fn taskbar_style_restored() {
 }
 
 unsafe extern "system" fn system_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if unsafe { bar_menu::paint_message(msg, lp) } {
-        return 1;
-    }
     let setting = if msg == WM_SETTINGCHANGE && lp != 0 {
         // Compare only the names we handle. The broadcast text belongs to Windows.
         ["ConvertibleSlateMode", "SystemDockMode", "TraySettings"]
@@ -253,6 +250,9 @@ unsafe extern "system" fn change(
     _: u32,
     _: u32,
 ) {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        bar_menu::foreground_changed(h);
+    }
     if !h.is_null()
         && (event == EVENT_SYSTEM_FOREGROUND
             || (object == 0
@@ -1089,7 +1089,7 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
     let mut next_health = 0;
     let mut next_update = 0;
     loop {
-        bar_menu::show_pending(events.hwnd, settings_path);
+        bar_menu::show_pending(&settings, settings_path);
         let now = start.elapsed().as_millis() as u64;
         let mut publish = false;
         if now >= next_health {

@@ -1,4 +1,7 @@
-use crate::policy::{Point, Rect};
+use crate::{
+    policy::{Edge, Point, Rect},
+    settings::Settings,
+};
 use std::{
     cell::{Cell, RefCell},
     path::Path,
@@ -11,7 +14,6 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_MENU},
-        HiDpi::GetDpiForWindow,
         Shell::ShellExecuteW,
         WindowsAndMessaging::*,
     },
@@ -19,12 +21,67 @@ use windows_sys::Win32::{
 
 #[derive(Default)]
 struct State {
-    surface: Option<(HWND, Rect, Rc<[Rect]>)>,
+    surface: Option<Surface>,
     down: Option<POINT>,
-    pending: Option<POINT>,
+    pending: Option<Invocation>,
+}
+
+struct Surface {
+    bar: HWND,
+    area: Rect,
+    edge: Edge,
+    dpi: u32,
+    controls: Rc<[Rect]>,
+}
+
+#[derive(Clone, Copy)]
+struct Invocation {
+    point: POINT,
+    area: Rect,
+    edge: Edge,
+    dpi: u32,
+}
+
+impl Invocation {
+    fn placement(self) -> (POINT, u32) {
+        let gap = dip(4, self.dpi);
+        let mut point = self.point;
+        let align = match self.edge {
+            Edge::Bottom => {
+                point.y = self.area.top - gap;
+                TPM_BOTTOMALIGN
+            }
+            Edge::Top => {
+                point.y = self.area.bottom + gap;
+                TPM_TOPALIGN
+            }
+            Edge::Left => {
+                point.x = self.area.right + gap;
+                TPM_LEFTALIGN
+            }
+            Edge::Right => {
+                point.x = self.area.left - gap;
+                TPM_RIGHTALIGN
+            }
+        };
+        let orientation = if self.edge.horizontal() {
+            TPM_VERTICAL
+        } else {
+            TPM_HORIZONTAL
+        };
+        (point, align | orientation)
+    }
 }
 
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
+thread_local! {
+    static ACTIVE_FOREGROUND: Cell<Option<HWND>> = const { Cell::new(None) };
+    static MENU_SHAPE: Cell<Option<(HWND, i32)>> = const { Cell::new(None) };
+}
+
+fn dip(value: i32, dpi: u32) -> i32 {
+    (value * dpi as i32 + 48) / 96
+}
 
 const MENU_ITEMS: [(u32, *const u16); 2] = [
     (1, windows_sys::w!("Task Manager")),
@@ -41,14 +98,44 @@ struct MenuPaint {
 }
 
 impl MenuPaint {
-    fn scale(self, dip: i32) -> i32 {
-        (dip * self.dpi as i32 / 96).max(1)
+    fn scale(self, value: i32) -> i32 {
+        dip(value, self.dpi).max(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popup_opens_inward_with_a_gap_on_every_edge() {
+        let area = Rect::new(-210, -80, -150, -20);
+        let point = POINT { x: -180, y: -50 };
+        for (edge, x, y, align) in [
+            (Edge::Bottom, -180, -88, TPM_BOTTOMALIGN | TPM_VERTICAL),
+            (Edge::Top, -180, -12, TPM_TOPALIGN | TPM_VERTICAL),
+            (Edge::Left, -142, -50, TPM_LEFTALIGN | TPM_HORIZONTAL),
+            (Edge::Right, -218, -50, TPM_RIGHTALIGN | TPM_HORIZONTAL),
+        ] {
+            let (anchor, flags) = Invocation {
+                point,
+                area,
+                edge,
+                dpi: 192,
+            }
+            .placement();
+            assert_eq!((anchor.x, anchor.y, flags), (x, y, align));
+            assert!(!area.contains(Point {
+                x: anchor.x,
+                y: anchor.y
+            }));
+        }
     }
 }
 
 thread_local! { static MENU_PAINT: Cell<Option<MenuPaint>> = const { Cell::new(None) }; }
 
-pub(super) unsafe fn paint_message(msg: u32, data: LPARAM) -> bool {
+unsafe fn paint_message(msg: u32, data: LPARAM) -> bool {
     if data == 0 || !matches!(msg, WM_MEASUREITEM | WM_DRAWITEM) {
         return false;
     }
@@ -114,9 +201,17 @@ pub(super) unsafe fn paint_message(msg: u32, data: LPARAM) -> bool {
 pub(super) struct Hook(HHOOK);
 
 impl Hook {
-    pub fn track(&mut self, surface: Option<(HWND, Rect, Rc<[Rect]>)>) {
+    pub fn track(&mut self, surface: Option<(&super::native::Bar, Rect, Rc<[Rect]>)>) {
         let needed = surface.is_some() || STATE.with(|state| state.borrow().down.is_some());
-        STATE.with(|state| state.borrow_mut().surface = surface);
+        STATE.with(|state| {
+            state.borrow_mut().surface = surface.map(|(bar, area, controls)| Surface {
+                bar: bar.hwnd,
+                area,
+                edge: bar.strip.edge,
+                dpi: bar.dpi,
+                controls,
+            });
+        });
         unsafe {
             if needed && self.0.is_null() {
                 self.0 = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), GetModuleHandleW(null()), 0);
@@ -139,26 +234,51 @@ impl Drop for Hook {
 
 unsafe extern "system" fn mouse(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
     unsafe {
+        if code == HC_ACTION as i32 && ACTIVE_FOREGROUND.get().is_some() {
+            if matches!(
+                message as u32,
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+            ) {
+                let pt = (*(data as *const MSLLHOOKSTRUCT)).pt;
+                if !is_our_popup(WindowFromPoint(pt)) {
+                    // End tracking before letting this same click reach the shell or app.
+                    EndMenu();
+                }
+            }
+            return CallNextHookEx(null_mut(), code, message, data);
+        }
         if code == HC_ACTION as i32 && matches!(message as u32, WM_RBUTTONDOWN | WM_RBUTTONUP) {
             let _dpi = super::DpiScope::enter();
             let pt = (*(data as *const MSLLHOOKSTRUCT)).pt;
             let point = Point { x: pt.x, y: pt.y };
             let consume = STATE.with(|state| {
                 let mut state = state.borrow_mut();
-                let empty = state.surface.as_ref().is_some_and(|(bar, area, controls)| {
-                    area.contains(point)
-                        && !controls.iter().any(|r| r.contains(point))
-                        && GetAncestor(WindowFromPoint(pt), GA_ROOT) == *bar
-                });
-                if message as u32 == WM_RBUTTONDOWN && empty {
+                let invocation = state
+                    .surface
+                    .as_ref()
+                    .filter(|surface| {
+                        surface.area.contains(point)
+                            && !surface.controls.iter().any(|r| r.contains(point))
+                            && GetAncestor(WindowFromPoint(pt), GA_ROOT) == surface.bar
+                    })
+                    .map(|surface| Invocation {
+                        point: pt,
+                        area: surface.area,
+                        edge: surface.edge,
+                        dpi: surface.dpi,
+                    });
+                if message as u32 == WM_RBUTTONDOWN && invocation.is_some() {
                     state.down = Some(pt);
                     return true;
                 }
                 if message as u32 == WM_RBUTTONUP
                     && let Some(down) = state.down.take()
                 {
-                    if empty && pt.x.abs_diff(down.x) <= 6 && pt.y.abs_diff(down.y) <= 6 {
-                        state.pending = Some(pt);
+                    if invocation.is_some()
+                        && pt.x.abs_diff(down.x) <= 6
+                        && pt.y.abs_diff(down.y) <= 6
+                    {
+                        state.pending = invocation;
                         PostThreadMessageW(
                             super::OBSERVER_THREAD.load(std::sync::atomic::Ordering::Relaxed),
                             WM_NULL,
@@ -178,22 +298,116 @@ unsafe extern "system" fn mouse(code: i32, message: WPARAM, data: LPARAM) -> LRE
     }
 }
 
-pub(super) fn show_pending(owner: HWND, config: &Path) {
+fn is_our_popup(hwnd: HWND) -> bool {
+    if hwnd.is_null()
+        || unsafe { GetWindowThreadProcessId(hwnd, null_mut()) }
+            != super::OBSERVER_THREAD.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return false;
+    }
+    super::native::window_class(hwnd) == "#32768"
+}
+
+pub(super) fn foreground_changed(hwnd: HWND) {
+    if ACTIVE_FOREGROUND
+        .get()
+        .is_some_and(|previous| previous != hwnd)
+        && unsafe { GetForegroundWindow() } == hwnd
+    {
+        unsafe { EndMenu() };
+    }
+}
+
+unsafe extern "system" fn menu_owner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        if paint_message(msg, lp) {
+            return 1;
+        }
+        if msg == WM_ENTERIDLE
+            && wp == MSGF_MENU as WPARAM
+            && let Some((shaped, diameter)) = MENU_SHAPE.get()
+        {
+            let popup = lp as HWND;
+            let mut bounds = RECT::default();
+            if shaped != popup && is_our_popup(popup) && GetWindowRect(popup, &mut bounds) != 0 {
+                let region = CreateRoundRectRgn(
+                    0,
+                    0,
+                    bounds.right - bounds.left,
+                    bounds.bottom - bounds.top,
+                    diameter,
+                    diameter,
+                );
+                if !region.is_null() {
+                    if SetWindowRgn(popup, region, 1) != 0 {
+                        MENU_SHAPE.set(Some((popup, diameter)));
+                    } else {
+                        DeleteObject(region);
+                    }
+                }
+            }
+        }
+        DefWindowProcW(hwnd, msg, wp, lp)
+    }
+}
+
+fn create_owner(point: POINT) -> HWND {
+    unsafe {
+        let instance = GetModuleHandleW(null());
+        let class = windows_sys::w!("SmartTaskbar.ContextMenuOwner");
+        let descriptor = WNDCLASSW {
+            lpfnWndProc: Some(menu_owner),
+            hInstance: instance,
+            lpszClassName: class,
+            ..Default::default()
+        };
+        if RegisterClassW(&descriptor) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            return null_mut();
+        }
+        // A visible, activatable owner is required for native outside-click handling.
+        let owner = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            class,
+            null(),
+            WS_POPUP,
+            point.x,
+            point.y,
+            1,
+            1,
+            null_mut(),
+            null_mut(),
+            instance,
+            null(),
+        );
+        if !owner.is_null() {
+            if SetLayeredWindowAttributes(owner, 0, 0, LWA_ALPHA) == 0 {
+                DestroyWindow(owner);
+                return null_mut();
+            }
+            ShowWindow(owner, SW_SHOWNOACTIVATE);
+        }
+        owner
+    }
+}
+
+pub(super) fn show_pending(settings: &Settings, config: &Path) {
+    let Some(invocation) = STATE.with(|state| state.borrow_mut().pending.take()) else {
+        return;
+    };
+    let owner = create_owner(invocation.point);
     if owner.is_null() {
         return;
     }
-    let Some(point) = STATE.with(|state| state.borrow_mut().pending.take()) else {
-        return;
-    };
     let action = unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {
+            DestroyWindow(owner);
             return;
         }
         let mut brush = null_mut();
         let mut font = null_mut();
         if let Some((bg, fg, selected)) = crate::appearance::taskbar_menu_colors() {
-            let dpi = GetDpiForWindow(WindowFromPoint(point)).max(96);
+            let dpi = invocation.dpi;
             brush = CreateSolidBrush(bg);
             font = super::app_labels::font(dpi);
             if !brush.is_null() && !font.is_null() {
@@ -231,15 +445,40 @@ pub(super) fn show_pending(owner: HWND, config: &Path) {
             InsertMenuItemW(menu, position as u32, 1, &item);
         }
         SetForegroundWindow(owner);
+        ACTIVE_FOREGROUND.set(Some(GetForegroundWindow()));
+        let radius = dip(i32::from(settings.radius), invocation.dpi);
+        MENU_SHAPE.set((radius > 0).then_some((null_mut(), radius * 2)));
+        let (point, align) = invocation.placement();
+        let area = invocation.area;
+        let params = TPMPARAMS {
+            cbSize: size_of::<TPMPARAMS>() as u32,
+            rcExclude: RECT {
+                left: area.left,
+                top: area.top,
+                right: area.right,
+                bottom: area.bottom,
+            },
+        };
         let action = TrackPopupMenuEx(
             menu,
-            TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            TPM_RIGHTBUTTON
+                | TPM_RETURNCMD
+                | align
+                | if settings.animate { 0 } else { TPM_NOANIMATION },
             point.x,
             point.y,
             owner,
-            null(),
+            &params,
         );
-        PostMessageW(owner, WM_NULL, 0, 0);
+        ACTIVE_FOREGROUND.set(None);
+        MENU_SHAPE.set(None);
+        PostThreadMessageW(
+            super::OBSERVER_THREAD.load(std::sync::atomic::Ordering::Relaxed),
+            WM_NULL,
+            0,
+            0,
+        );
+        DestroyWindow(owner);
         DestroyMenu(menu);
         MENU_PAINT.set(None);
         if !brush.is_null() {
@@ -253,7 +492,7 @@ pub(super) fn show_pending(owner: HWND, config: &Path) {
     match action {
         1 => unsafe {
             ShellExecuteW(
-                owner,
+                null_mut(),
                 windows_sys::w!("open"),
                 windows_sys::w!("Taskmgr.exe"),
                 null(),
