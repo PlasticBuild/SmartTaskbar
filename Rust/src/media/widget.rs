@@ -327,6 +327,7 @@ struct Details {
     bounds: Rect,
     shown_at: u64,
     alpha: u8,
+    draw_at: u64,
 }
 
 impl Drop for Details {
@@ -438,6 +439,9 @@ impl Widget {
         } else {
             self.hover_at = None;
         }
+        if self.hover_at.is_none() && self.details.is_none() {
+            return false;
+        }
         let Some(bounds) = detail_bounds(bar, compact.bounds, ui.dpi) else {
             self.close_details();
             return false;
@@ -463,6 +467,13 @@ impl Widget {
             {
                 detail.ui.drag = None;
             }
+            let changed = detail
+                .ui
+                .track
+                .as_ref()
+                .is_none_or(|previous| !Arc::ptr_eq(previous, &track))
+                || detail.ui.light != ui.light;
+            let advances = track.playing && track.timeline.is_some() && detail.ui.drag.is_none();
             detail.ui.track = Some(track);
             detail.ui.light = ui.light;
             let alpha = if animate {
@@ -476,9 +487,10 @@ impl Widget {
                 }
                 detail.alpha = alpha;
             }
-            // The seek position continues to advance while the details are open.
-            unsafe {
-                InvalidateRect(detail.hwnd, null(), 0);
+            // Pointer handling and fades can run faster than the seek display needs to paint.
+            if changed || (advances && now >= detail.draw_at) {
+                detail.draw_at = now + 100;
+                unsafe { InvalidateRect(detail.hwnd, null(), 0) };
             }
             return true;
         }
@@ -505,6 +517,7 @@ impl Widget {
             bounds,
             shown_at: now,
             alpha,
+            draw_at: now + 100,
         };
         if !place(
             hwnd,

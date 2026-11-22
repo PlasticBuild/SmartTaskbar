@@ -275,13 +275,18 @@ pub(super) fn bar_info(h: HWND, pid: u32) -> Option<Bar> {
 }
 
 pub(super) fn top_windows() -> Vec<HWND> {
+    let mut out = Vec::new();
+    collect_top_windows(&mut out);
+    out
+}
+
+fn collect_top_windows(out: &mut Vec<HWND>) {
     unsafe extern "system" fn each(h: HWND, data: LPARAM) -> i32 {
         unsafe { (&mut *(data as *mut Vec<HWND>)).push(h) };
         1
     }
-    let mut out = Vec::new();
-    unsafe { EnumWindows(Some(each), (&mut out as *mut Vec<HWND>) as LPARAM) };
-    out
+    out.clear();
+    unsafe { EnumWindows(Some(each), (out as *mut Vec<HWND>) as LPARAM) };
 }
 
 pub(super) fn bars() -> Vec<Bar> {
@@ -431,6 +436,17 @@ pub(super) struct Scene {
     pub thumbnail_groups: Vec<(Rect, Rect)>,
 }
 
+impl Scene {
+    pub fn clear(&mut self) {
+        self.windows.clear();
+        self.foreground_fullscreen = None;
+        self.menus.clear();
+        self.panels.clear();
+        self.context_menus.clear();
+        self.thumbnail_groups.clear();
+    }
+}
+
 fn panel_kind(name: &str, class: &str, bounds: Rect, display: Rect, dpi: u32) -> Option<MenuKind> {
     match (name, class) {
         ("startmenuexperiencehost.exe", _) => Some(MenuKind::Start),
@@ -456,24 +472,22 @@ fn panel_kind(name: &str, class: &str, bounds: Rect, display: Rect, dpi: u32) ->
     }
 }
 
-fn candidates() -> Vec<HWND> {
-    let mut windows = top_windows();
-    let foreground = unsafe { GetForegroundWindow() };
+fn collect_candidates(windows: &mut Vec<HWND>, foreground: HWND) {
+    collect_top_windows(windows);
     if !foreground.is_null() && !windows.contains(&foreground) {
         windows.insert(0, foreground)
     }
     // EnumWindows can omit packaged shell windows. Also enumerate their installed window classes.
     for class in [
-        "Windows.UI.Core.CoreWindow",
-        "ControlCenterWindow",
-        "TopLevelWindowForOverflowXamlIsland",
-        "NotificationCenterWindow",
-        "Xaml_WindowedPopupClass",
+        windows_sys::w!("Windows.UI.Core.CoreWindow"),
+        windows_sys::w!("ControlCenterWindow"),
+        windows_sys::w!("TopLevelWindowForOverflowXamlIsland"),
+        windows_sys::w!("NotificationCenterWindow"),
+        windows_sys::w!("Xaml_WindowedPopupClass"),
     ] {
-        let class = wide(class);
         let mut prev = null_mut();
         for _ in 0..128 {
-            let h = unsafe { FindWindowExW(null_mut(), prev, class.as_ptr(), null()) };
+            let h = unsafe { FindWindowExW(null_mut(), prev, class, null()) };
             if h.is_null() || h == prev {
                 break;
             }
@@ -483,17 +497,17 @@ fn candidates() -> Vec<HWND> {
             prev = h;
         }
     }
-    windows
 }
 
-pub(super) fn scene(names: &mut ProcessNames) -> Scene {
-    let mut out = Scene::default();
+pub(super) fn refresh_scene(names: &mut ProcessNames, out: &mut Scene, windows: &mut Vec<HWND>) {
+    out.clear();
     for item in names.0.values_mut() {
         item.seen = false;
     }
     let fg = unsafe { GetForegroundWindow() };
     let shell = shell_pid();
-    for h in candidates() {
+    collect_candidates(windows, fg);
+    for &h in windows.iter() {
         if unsafe { IsWindowVisible(h) } == 0 || unsafe { IsIconic(h) } != 0 || cloaked(h) {
             continue;
         }
@@ -617,7 +631,6 @@ pub(super) fn scene(names: &mut ProcessNames) -> Scene {
         }
     }
     names.0.retain(|_, item| item.seen);
-    out
 }
 
 pub(super) fn set_work(r: Rect) -> bool {

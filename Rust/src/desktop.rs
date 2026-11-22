@@ -369,6 +369,7 @@ impl Drop for Notifications {
 struct Managed {
     snap: Snapshot,
     hover: HoverState,
+    overlap: Option<(Option<Rect>, bool)>,
     slide: Slide,
     depth: i32,
     raised: bool,
@@ -409,6 +410,7 @@ impl Managed {
         Ok(Some(Self {
             snap,
             hover: HoverState::default(),
+            overlap: None,
             slide: Slide::default(),
             depth,
             raised: false,
@@ -595,6 +597,7 @@ struct Model {
     displays: Vec<Rect>,
     monitors: Vec<Monitor>,
     scene: Scene,
+    scene_windows: Vec<HWND>,
     names: native::ProcessNames,
     shell: u32,
     media: Option<Worker>,
@@ -749,10 +752,20 @@ impl Model {
             };
             let cover = if fullscreen {
                 policy::Cover::ForegroundFullscreen
-            } else if policy::is_covered(bar, face, &self.scene.windows) {
-                policy::Cover::Overlap
             } else {
-                policy::Cover::Clear
+                let covered = match m.overlap {
+                    Some((cached_face, covered)) if cached_face == face => covered,
+                    _ => {
+                        let covered = policy::is_covered(bar, face, &self.scene.windows);
+                        m.overlap = Some((face, covered));
+                        covered
+                    }
+                };
+                if covered {
+                    policy::Cover::Overlap
+                } else {
+                    policy::Cover::Clear
+                }
             };
             let panel = self
                 .scene
@@ -1087,12 +1100,15 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
         let dirty_due = next_scene.saturating_sub(scene_fallback - SCENE_DEBOUNCE);
         if now >= next_scene || (DIRTY.load(Ordering::Relaxed) && now >= dirty_due) {
             DIRTY.store(false, Ordering::Relaxed);
-            model.scene = if model.managed.is_empty() {
+            if model.managed.is_empty() {
                 model.names = native::ProcessNames::default();
-                Scene::default()
+                model.scene.clear();
             } else {
-                native::scene(&mut model.names)
-            };
+                native::refresh_scene(&mut model.names, &mut model.scene, &mut model.scene_windows);
+                for managed in model.managed.values_mut() {
+                    managed.overlap = None;
+                }
+            }
             next_scene = now + scene_fallback;
             publish = true;
         }
