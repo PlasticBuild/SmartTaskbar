@@ -27,11 +27,17 @@ use windows_sys::Win32::{
     },
 };
 
+#[path = "appearance/controls.rs"]
+mod controls;
 #[path = "appearance/preview.rs"]
 mod preview;
 #[path = "appearance/zone_preview.rs"]
 mod zone_preview;
 use preview::Paint;
+pub(crate) fn app_label_colors() -> (u32, u32) {
+    let palette = unsafe { preview::Palette::load() };
+    (palette.card, palette.text)
+}
 const LAYOUT: u16 = 101;
 const ALIGN: u16 = 102;
 const RADIUS: u16 = 103;
@@ -60,6 +66,10 @@ const MATCH_MENU_WIDTH: u16 = 127;
 const REDIRECT: u16 = 128;
 const REDIRECT_PROVIDER: u16 = 129;
 const REMOVE_REDIRECT: u16 = 130;
+const SHOW_ZONE: u16 = 131;
+const SETTINGS_SCROLL: u16 = 132;
+const APP_LABEL_DELAY: u16 = 133;
+const WINDOWS_TASKBAR_SETTINGS: u16 = 134;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
 const UPDATE_TIMER: usize = 3;
@@ -81,6 +91,7 @@ const LABELS: &[(u16, &str)] = &[
     (ZONE, "Activation &zone"),
     (OUTSIDE, "Outside edge &delay"),
     (SHARED, "Shared edge de&lay"),
+    (APP_LABEL_DELAY, "App name hover delay"),
     (MEDIA_SIDE, "Media player &side"),
     (REDIRECT_PROVIDER, "Redirect search provider"),
 ];
@@ -128,13 +139,13 @@ impl Page {
             let left = usable - right - 20;
             (
                 Box2::at(inset, 102, left, (height - 175).clamp(360, 610)),
-                Box2::at(inset + left + 20, 102, right, 900),
+                Box2::at(inset + left + 20, 102, right, 1024),
             )
         } else {
             let h = (usable * 53 / 100).clamp(215, 340);
             (
                 Box2::at(inset, 102, usable, h),
-                Box2::at(inset, 102 + h + 14, usable, 900),
+                Box2::at(inset, 102 + h + 14, usable, 1024),
             )
         };
         Self {
@@ -161,15 +172,18 @@ impl Page {
             MONITOR => (410, 25),
             OVERRIDE => (441, 23),
             ZONE => (489, 25),
-            OUTSIDE => (537, 25),
-            SHARED => (585, 25),
-            MOTION => (617, 23),
-            SIGN_IN => (643, 23),
-            MEDIA => (669, 23),
-            MEDIA_SIDE => (715, 25),
-            REDIRECT => (759, 23),
-            REDIRECT_PROVIDER => (805, 25),
-            REMOVE_REDIRECT => (845, 31),
+            SHOW_ZONE => (519, 23),
+            OUTSIDE => (565, 25),
+            SHARED => (613, 25),
+            APP_LABEL_DELAY => (661, 25),
+            MOTION => (693, 23),
+            SIGN_IN => (719, 23),
+            MEDIA => (745, 23),
+            MEDIA_SIDE => (791, 25),
+            REDIRECT => (835, 23),
+            REDIRECT_PROVIDER => (881, 25),
+            REMOVE_REDIRECT => (921, 31),
+            WINDOWS_TASKBAR_SETTINGS => (966, 31),
             FULLSCREEN => {
                 return Box2::at(
                     self.preview.x + 13,
@@ -360,7 +374,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             WS_EX_CONTROLPARENT,
             class.as_ptr(),
             wide("SmartTaskbar Settings").as_ptr(),
-            WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             (1010 * scale / 96).min((area.right - area.left).max(440)),
@@ -386,13 +400,10 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
                 break;
             }
             if msg.hwnd == hwnd && msg.message == REFRESH_ZONE_PREVIEW {
-                let editing_zone = state.tab == Tab::Appearance
-                    && GetForegroundWindow() == hwnd
-                    && IsIconic(hwnd) == 0
-                    && [ZONE, MONITOR]
-                        .iter()
-                        .any(|id| GetFocus() == GetDlgItem(hwnd, i32::from(*id)));
-                let bands = if editing_zone {
+                let show = IsIconic(hwnd) == 0
+                    && SendDlgItemMessageW(hwnd, SHOW_ZONE.into(), BM_GETCHECK, 0, 0)
+                        == BST_CHECKED as isize;
+                let bands = if show {
                     crate::desktop::activation_preview(
                         &state.draft,
                         &state.monitors,
@@ -413,7 +424,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             if msg.message == WM_KEYDOWN && current != prior && IsChild(hwnd, current) != 0 {
                 let id = GetDlgCtrlID(current) as u16;
                 if ((LAYOUT..=SHARED).contains(&id)
-                    || (MATCH_MENU_WIDTH..=REMOVE_REDIRECT).contains(&id))
+                    || (MATCH_MENU_WIDTH..=WINDOWS_TASKBAR_SETTINGS).contains(&id))
                     && !matches!(id, ENGINE | APPLY)
                     && state.tab == Tab::Appearance
                 {
@@ -467,7 +478,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_SIZE => {
                 if (*ptr).ready {
-                    layout(hwnd, ptr);
+                    if wp == SIZE_MINIMIZED as usize {
+                        SendDlgItemMessageW(hwnd, SHOW_ZONE.into(), BM_SETCHECK, 0, 0);
+                        PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
+                    } else {
+                        layout(hwnd, ptr);
+                    }
                 }
                 0
             }
@@ -477,15 +493,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 limits.ptMinTrackSize.y = 280 * (*ptr).dpi / 96;
                 0
             }
-            WM_ACTIVATE if (*ptr).ready => {
-                PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
-                if (wp & 0xffff) != WA_INACTIVE as usize {
-                    if (*ptr).tab == Tab::Appearance && (*ptr).paint.refresh_icons() {
-                        SetTimer(hwnd, ICON_TIMER, 90, None);
-                    }
-                    sync_engine(hwnd, ptr);
-                    redraw(hwnd);
+            WM_ACTIVATE if (*ptr).ready && (wp & 0xffff) != WA_INACTIVE as usize => {
+                if (*ptr).tab == Tab::Appearance && (*ptr).paint.refresh_icons() {
+                    SetTimer(hwnd, ICON_TIMER, 90, None);
                 }
+                sync_engine(hwnd, ptr);
+                redraw(hwnd);
                 0
             }
             WM_PAINT => {
@@ -510,7 +523,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let note = &*(lp as *const NMHDR);
                 if note.idFrom == TABS as usize && note.code == TCN_SELCHANGE {
                     switch_tab(hwnd, ptr);
-                    PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
                 }
                 0
             }
@@ -544,7 +556,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         select_monitor(hwnd, ptr);
                     } else if matches!(
                         id,
-                        LAYOUT | ALIGN | ZONE | MEDIA_SIDE | OUTSIDE | SHARED | REDIRECT_PROVIDER
+                        LAYOUT
+                            | ALIGN
+                            | ZONE
+                            | MEDIA_SIDE
+                            | OUTSIDE
+                            | SHARED
+                            | REDIRECT_PROVIDER
+                            | APP_LABEL_DELAY
                     ) {
                         read_controls(hwnd, ptr);
                     }
@@ -554,6 +573,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             read_controls(hwnd, ptr)
                         }
                         REMOVE_REDIRECT => remove_redirect(hwnd, ptr),
+                        WINDOWS_TASKBAR_SETTINGS => open_windows_taskbar_settings(hwnd, ptr),
                         MENU | FULLSCREEN => toggle_preview(hwnd, ptr, id),
                         APPLY => save(hwnd, ptr),
                         ENGINE => engine(hwnd, ptr),
@@ -563,7 +583,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         _ => {}
                     }
                 }
-                if matches!(id, ZONE | MONITOR | OVERRIDE | APPLY) {
+                if matches!(
+                    id,
+                    ZONE | MONITOR | OVERRIDE | SHOW_ZONE | LAYOUT | ALIGN | APPLY
+                ) {
                     PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
                 }
                 0
@@ -572,7 +595,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 read_controls(hwnd, ptr);
                 0
             }
-            WM_VSCROLL if lp == 0 => {
+            WM_VSCROLL if lp == GetDlgItem(hwnd, SETTINGS_SCROLL.into()) as LPARAM => {
                 let s = &*ptr;
                 let step = match (wp & 0xffff) as i32 {
                     SB_LINEUP => -32,
@@ -587,7 +610,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             fMask: SIF_TRACKPOS,
                             ..Default::default()
                         };
-                        if GetScrollInfo(hwnd, SB_VERT, &mut info) != 0 {
+                        if GetScrollInfo(lp as HWND, SB_CTL, &mut info) != 0 {
                             info.nTrackPos - s.scroll
                         } else {
                             0
@@ -691,9 +714,12 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         let mut failed = false;
         for id in (LAYOUT..=TRANSPARENCY)
             .chain([ICON_SIZE])
-            .chain(HOVER..=SIGN_IN)
+            .chain(HOVER..=ZONE)
+            .chain([SHOW_ZONE])
+            .chain(MOTION..=SIGN_IN)
             .chain(FULLSCREEN..=MEDIA_SIDE)
             .chain(MONITOR..=REMOVE_REDIRECT)
+            .chain([APP_LABEL_DELAY, SETTINGS_SCROLL, WINDOWS_TASKBAR_SETTINGS])
         {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
@@ -714,7 +740,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
             }
             let (class, text, style) = match id {
                 LAYOUT | ALIGN | ZONE | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED
-                | REDIRECT_PROVIDER => (
+                | REDIRECT_PROVIDER | APP_LABEL_DELAY => (
                     "COMBOBOX",
                     match id {
                         LAYOUT => "Layout",
@@ -724,6 +750,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                         OUTSIDE => "Outside edge delay",
                         SHARED => "Shared edge delay",
                         MEDIA_SIDE => "Media player side",
+                        APP_LABEL_DELAY => "App name hover delay",
                         _ => "Redirect search provider",
                     },
                     (CBS_DROPDOWNLIST | CBS_HASSTRINGS) as u32 | WS_VSCROLL,
@@ -756,6 +783,11 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 ),
                 REDIRECT => ("BUTTON", "Enable MSEdgeRedirect", BS_AUTOCHECKBOX as u32),
                 REMOVE_REDIRECT => ("BUTTON", "Uninstall MSEdgeRedirect", BS_PUSHBUTTON as u32),
+                WINDOWS_TASKBAR_SETTINGS => (
+                    "BUTTON",
+                    "Open Windows taskbar settings",
+                    BS_PUSHBUTTON as u32,
+                ),
                 SIGN_IN => (
                     "BUTTON",
                     "Start SmartTaskbar when I sign in",
@@ -766,7 +798,9 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                     "Use custom reveal settings",
                     BS_AUTOCHECKBOX as u32,
                 ),
+                SHOW_ZONE => ("BUTTON", "Show activation zone", BS_AUTOCHECKBOX as u32),
                 TABS => ("SysTabControl32", "", 0),
+                SETTINGS_SCROLL => ("SCROLLBAR", "", SBS_VERT as u32),
                 CHECK_UPDATES => ("BUTTON", "Check again", BS_PUSHBUTTON as u32),
                 RELEASES => ("BUTTON", "View releases", BS_PUSHBUTTON as u32),
                 REPOSITORY => ("BUTTON", "Open GitHub repository", BS_PUSHBUTTON as u32),
@@ -787,7 +821,13 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 0,
                 wide(class).as_ptr(),
                 wide(text).as_ptr(),
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | style,
+                WS_CHILD
+                    | WS_VISIBLE
+                    | if id == SETTINGS_SCROLL {
+                        style
+                    } else {
+                        WS_TABSTOP | style
+                    },
                 0,
                 0,
                 1,
@@ -798,6 +838,10 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                 null_mut(),
             );
             failed |= control.is_null();
+            if !control.is_null() {
+                failed |=
+                    SetWindowSubclass(control, Some(controls::paint_control), id.into(), 0) == 0;
+            }
             if !control.is_null() && matches!(id, RADIUS | TRANSPARENCY | ICON_SIZE | HOVER | PRESS)
             {
                 failed |= SetWindowSubclass(control, Some(slider_wheel), id.into(), 0) == 0;
@@ -915,13 +959,33 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=REMOVE_REDIRECT {
+        for id in LAYOUT..=WINDOWS_TASKBAR_SETTINGS {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
             }
             SetWindowTheme(c, theme.as_ptr(), null());
             SendMessageW(c, WM_SETFONT, (*state).paint.normal as usize, 1);
+            if matches!(
+                id,
+                LAYOUT
+                    | ALIGN
+                    | ZONE
+                    | MEDIA_SIDE
+                    | MONITOR
+                    | OUTSIDE
+                    | SHARED
+                    | REDIRECT_PROVIDER
+                    | APP_LABEL_DELAY
+            ) {
+                let mut combo = COMBOBOXINFO {
+                    cbSize: mem::size_of::<COMBOBOXINFO>() as u32,
+                    ..Default::default()
+                };
+                if GetComboBoxInfo(c, &mut combo) != 0 && !combo.hwndList.is_null() {
+                    SetWindowTheme(combo.hwndList, theme.as_ptr(), null());
+                }
+            }
         }
     }
 }
@@ -933,7 +997,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let dpi = (*state).dpi;
         let w = client.right * 96 / dpi;
         let h = client.bottom * 96 / dpi;
-        let page = Page::layout(w, h);
+        let page = Page::layout(w.saturating_sub(14), h);
         let total = if (*state).tab != Tab::Appearance {
             344.max(h)
         } else {
@@ -951,7 +1015,17 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             nPos: (*state).scroll,
             nTrackPos: 0,
         };
-        SetScrollInfo(hwnd, SB_VERT, &info, 1);
+        let scrollbar = GetDlgItem(hwnd, SETTINGS_SCROLL.into());
+        SetWindowPos(
+            scrollbar,
+            null_mut(),
+            (w - 14).max(0) * dpi / 96,
+            0,
+            14 * dpi / 96,
+            client.bottom,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+        SetScrollInfo(scrollbar, SB_CTL, &info, 1);
         position_controls(hwnd, &*state);
     }
 }
@@ -966,8 +1040,8 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
             ..
         } = *state;
         let mut placements =
-            Vec::with_capacity((REMOVE_REDIRECT - LAYOUT + 1) as usize + LABELS.len());
-        for id in LAYOUT..=REMOVE_REDIRECT {
+            Vec::with_capacity((APP_LABEL_DELAY - LAYOUT + 1) as usize + LABELS.len());
+        for id in (LAYOUT..=WINDOWS_TASKBAR_SETTINGS).filter(|&id| id != SETTINGS_SCROLL) {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
             let fixed = matches!(id, ENGINE | TABS | APPLY);
@@ -988,7 +1062,15 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
             }
             let height = if matches!(
                 id,
-                LAYOUT | ALIGN | ZONE | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED | REDIRECT_PROVIDER
+                LAYOUT
+                    | ALIGN
+                    | ZONE
+                    | MEDIA_SIDE
+                    | MONITOR
+                    | OUTSIDE
+                    | SHARED
+                    | REDIRECT_PROVIDER
+                    | APP_LABEL_DELAY
             ) {
                 180
             } else {
@@ -1055,7 +1137,7 @@ unsafe fn scroll(hwnd: HWND, state: *mut State, delta: i32) {
             .clamp(0, (*state).scroll_max);
         if pos != (*state).scroll {
             (*state).scroll = pos;
-            SetScrollPos(hwnd, SB_VERT, pos, 1);
+            SetScrollPos(GetDlgItem(hwnd, SETTINGS_SCROLL.into()), SB_CTL, pos, 1);
             position_controls(hwnd, &*state);
         }
     }
@@ -1134,6 +1216,11 @@ unsafe fn reveal_controls(hwnd: HWND, state: *mut State) {
                 reveal.shared_ms,
                 &[150, 220, 300, 400, 600, 800, 1000][..],
             ),
+            (
+                APP_LABEL_DELAY,
+                s.draft.app_label_delay_ms,
+                &[0, 100, 150, 250, 350, 500, 750, 1000, 1500][..],
+            ),
         ] {
             let combo = GetDlgItem(hwnd, id as i32);
             SendMessageW(combo, CB_RESETCONTENT, 0, 0);
@@ -1154,7 +1241,7 @@ unsafe fn reveal_controls(hwnd: HWND, state: *mut State) {
                     SendMessageW(combo, CB_SETCURSEL, index, 0);
                 }
             }
-            EnableWindow(combo, editable);
+            EnableWindow(combo, if id == APP_LABEL_DELAY { 1 } else { editable });
         }
         reflect(hwnd, state);
     }
@@ -1210,6 +1297,8 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
         };
         reveal.outside_ms = delay(OUTSIDE as i32).unwrap_or(reveal.outside_ms);
         reveal.shared_ms = delay(SHARED as i32).unwrap_or(reveal.shared_ms);
+        s.draft.app_label_delay_ms =
+            delay(APP_LABEL_DELAY.into()).unwrap_or(s.draft.app_label_delay_ms);
         if let Some(key) = &s.monitor {
             if let Some(setting) = s.draft.monitor_reveal.get_mut(key) {
                 *setting = reveal;
@@ -1519,6 +1608,23 @@ unsafe fn receive_updates(hwnd: HWND, state: *mut State) {
             },
         );
         redraw(hwnd);
+    }
+}
+
+unsafe fn open_windows_taskbar_settings(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let status = ShellExecuteW(
+            hwnd,
+            windows_sys::w!("open"),
+            windows_sys::w!("ms-settings:taskbar"),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        );
+        if status as isize <= 32 {
+            (*state).status = "Windows taskbar settings could not be opened.".into();
+            redraw(hwnd);
+        }
     }
 }
 

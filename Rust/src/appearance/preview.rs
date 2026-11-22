@@ -7,13 +7,16 @@ use windows_sys::Win32::{
         Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize},
         Registry::*,
     },
-    UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGetFileInfoW},
+    UI::{
+        Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
+        Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGetFileInfoW},
+    },
 };
 
 fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
 }
-fn mix(a: u32, b: u32, t: f32) -> u32 {
+pub(super) fn mix(a: u32, b: u32, t: f32) -> u32 {
     let f = |shift: u32| {
         let x = ((a >> shift) & 255) as f32;
         let y = ((b >> shift) & 255) as f32;
@@ -24,16 +27,40 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
 #[derive(Clone, Copy)]
 pub(super) struct Palette {
     pub dark: bool,
+    pub high_contrast: bool,
     pub text: u32,
     pub card: u32,
-    page: u32,
-    muted: u32,
-    line: u32,
-    accent: u32,
+    pub page: u32,
+    pub muted: u32,
+    pub line: u32,
+    pub accent: u32,
 }
 impl Palette {
-    unsafe fn load() -> Self {
+    pub(super) unsafe fn load() -> Self {
         unsafe {
+            let mut contrast = HIGHCONTRASTW {
+                cbSize: mem::size_of::<HIGHCONTRASTW>() as u32,
+                ..Default::default()
+            };
+            if SystemParametersInfoW(
+                SPI_GETHIGHCONTRAST,
+                contrast.cbSize,
+                (&mut contrast as *mut HIGHCONTRASTW).cast(),
+                0,
+            ) != 0
+                && contrast.dwFlags & HCF_HIGHCONTRASTON != 0
+            {
+                return Self {
+                    dark: false,
+                    high_contrast: true,
+                    page: GetSysColor(COLOR_WINDOW),
+                    card: GetSysColor(COLOR_WINDOW),
+                    text: GetSysColor(COLOR_WINDOWTEXT),
+                    muted: GetSysColor(COLOR_GRAYTEXT),
+                    line: GetSysColor(COLOR_WINDOWTEXT),
+                    accent: GetSysColor(COLOR_HIGHLIGHT),
+                };
+            }
             let mut value = 1u32;
             let mut size = 4;
             RegGetValueW(
@@ -48,18 +75,20 @@ impl Palette {
             if value == 0 {
                 Self {
                     dark: true,
-                    page: rgb(22, 24, 27),
-                    card: rgb(36, 39, 44),
+                    high_contrast: false,
+                    page: rgb(25, 25, 25),
+                    card: rgb(32, 32, 32),
                     text: rgb(241, 243, 247),
                     muted: rgb(176, 185, 199),
-                    line: rgb(63, 69, 78),
+                    line: rgb(57, 57, 57),
                     accent: rgb(126, 197, 241),
                 }
             } else {
                 Self {
                     dark: false,
-                    page: rgb(242, 245, 247),
-                    card: rgb(255, 255, 255),
+                    high_contrast: false,
+                    page: rgb(243, 243, 243),
+                    card: rgb(250, 250, 250),
                     text: rgb(26, 36, 48),
                     muted: rgb(80, 95, 111),
                     line: rgb(208, 216, 224),

@@ -1,4 +1,6 @@
 //! Live shell coordination. Merely linking this module never opens a monitor or changes Windows.
+mod app_labels;
+mod bar_menu;
 mod lease;
 mod native;
 mod rescue;
@@ -155,6 +157,7 @@ static TOPOLOGY_CHANGED: AtomicBool = AtomicBool::new(false);
 static SHELL_LAYOUT_CHANGED: AtomicBool = AtomicBool::new(false);
 static TASKBAR_STYLE_CHANGED: AtomicBool = AtomicBool::new(false);
 static ISLAND_STYLER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static TASKBAR_STYLER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static OBSERVER_THREAD: AtomicU32 = AtomicU32::new(0);
@@ -169,6 +172,7 @@ pub fn style_changed() {
 
 pub fn taskbar_style_applied(island: bool, refresh_outline: bool) {
     ISLAND_STYLER_ACTIVE.store(island, Ordering::Relaxed);
+    TASKBAR_STYLER_ACTIVE.store(true, Ordering::Relaxed);
     if refresh_outline {
         TASKBAR_STYLE_CHANGED.store(true, Ordering::Relaxed);
         style_changed();
@@ -177,6 +181,7 @@ pub fn taskbar_style_applied(island: bool, refresh_outline: bool) {
 
 pub fn taskbar_style_restored() {
     ISLAND_STYLER_ACTIVE.store(false, Ordering::Relaxed);
+    TASKBAR_STYLER_ACTIVE.store(false, Ordering::Relaxed);
 }
 
 unsafe extern "system" fn system_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -634,6 +639,7 @@ struct Model {
     reserve_changed_at: u64,
     cursor: Option<policy::Point>,
     pointer_idle_ms: Option<u32>,
+    app_label: app_labels::Hover,
     native_touch: bool,
 }
 impl Model {
@@ -688,6 +694,8 @@ impl Model {
         let mut thumbnail = None;
         let mut delay = 2400;
         let mut stationary_can_wait = true;
+        let labels = TASKBAR_STYLER_ACTIVE.load(Ordering::Relaxed) && !self.managed.is_empty();
+        let mut label_target = None;
         if settings.media_player && !self.managed.is_empty() {
             if self.media.is_none() {
                 self.media = Worker::start();
@@ -884,6 +892,15 @@ impl Model {
                 m.snap.raise(true)
             }
             m.menu = active_panel;
+            if labels
+                && visible
+                && !menu
+                && m.depth == Managed::thickness(m.snap.bar)
+                && let Some(point) = cursor
+                && face.unwrap_or(bar.bounds).contains(point)
+            {
+                label_target = Some((m.snap.bar, point, face.unwrap_or(bar.bounds)));
+            }
             let bridge = if let Some(p) = pointer {
                 m.join.update(surface, panel, p, settings)
             } else {
@@ -950,6 +967,13 @@ impl Model {
                 }
             }
             stationary_can_wait &= !menu && !m.media.is_visible() && m.reflow.is_none();
+        }
+        if labels {
+            delay = delay.min(125);
+        }
+        if let Some(tick) = self.app_label.update(label_target, settings, now) {
+            delay = delay.min(tick);
+            stationary_can_wait = false;
         }
         self.pointer_idle_ms = stationary_can_wait.then_some(if delay == 60 { 140 } else { delay });
         Ok(delay)
@@ -1064,6 +1088,7 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
     let mut next_health = 0;
     let mut next_update = 0;
     loop {
+        bar_menu::show_pending(events.hwnd, settings_path);
         let now = start.elapsed().as_millis() as u64;
         let mut publish = false;
         if now >= next_health {

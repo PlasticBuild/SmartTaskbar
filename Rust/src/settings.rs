@@ -56,6 +56,7 @@ pub struct Settings {
     pub transparency: u8,
     pub icon_size: u8,
     pub hover_lift: u8,
+    pub app_label_delay_ms: u16,
     pub click_depth: u8,
     pub animate: bool,
     pub alignment: Alignment,
@@ -79,6 +80,7 @@ impl Default for Settings {
             transparency: 65,
             icon_size: 100,
             hover_lift: 2,
+            app_label_delay_ms: 250,
             click_depth: 1,
             animate: true,
             alignment: Alignment::Center,
@@ -135,6 +137,7 @@ impl Settings {
         if self.radius > 24
             || self.transparency > 85
             || self.hover_lift > 8
+            || self.app_label_delay_ms > 1500
             || self.click_depth > 5
             || !(Self::MIN_ICON_SIZE..=Self::MAX_ICON_SIZE).contains(&self.icon_size)
         {

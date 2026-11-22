@@ -69,6 +69,7 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=assets/taskbar.ico");
     println!("cargo:rerun-if-changed=assets/taskbar.rc");
+    println!("cargo:rerun-if-changed=assets/taskbar.manifest");
     println!("cargo:rerun-if-env-changed=RC");
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("smarttaskbar.res");
     let status = Command::new(compiler())

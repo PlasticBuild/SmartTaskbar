@@ -216,6 +216,11 @@ fn taskbar(s: &Settings, joined: bool, reserve: crate::media::Reserve) -> Result
         }
     }
     let animate_icons = s.animate && (s.hover_lift != 0 || s.click_depth != 0);
+    rule(
+        &mut profile,
+        "Taskbar.TaskListButton",
+        ["ToolTipService.ToolTip={x:Null}"],
+    );
     {
         // Set the image dimensions in DIPs because the shell's default changes with orientation.
         let size = f64::from(s.icon_size) * 24.0 / 100.0;
