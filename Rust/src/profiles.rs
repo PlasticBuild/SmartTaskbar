@@ -278,6 +278,8 @@ fn start_menu(s: &Settings, geometry: Geometry) -> Profile {
     let mut profile = Profile::from([
         ("theme".into(), "".into()),
         ("disableNewStartMenuLayout".into(), "default".into()),
+        // The Start styler requires its declared scalar settings in a full profile.
+        ("webContentCustomJs".into(), String::new()),
     ]);
     let joined = geometry.is_some();
     rule(&mut profile, "Border#AcrylicBorder", glass(s, joined));
@@ -590,6 +592,7 @@ mod tests {
         };
         for geometry in [None, geometry(545, -27)] {
             let profile = build(&settings, geometry).unwrap().remove(1);
+            assert_eq!(profile["webContentCustomJs"], "");
             let background = styles(&profile, "Border#AppBorder");
             assert_eq!(
                 background[0],

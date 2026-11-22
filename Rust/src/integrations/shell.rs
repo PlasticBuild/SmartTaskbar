@@ -596,4 +596,33 @@ mod tests {
         v["settings"]["engine"]["exclude"] = serde_json::json!([]);
         assert!(!scope_ok(&v, Path::new(r"C:\Windows"), false));
     }
+
+    #[test]
+    #[ignore = "writes settings to a disposable copy of the bundled Windhawk host"]
+    fn bundled_windhawk_accepts_the_complete_profiles() {
+        let root = PathBuf::from(std::env::var_os("SMARTTASKBAR_TEST_STYLE_ROOT").unwrap());
+        assert!(root.join("fixture-only").is_file());
+        let mut settings = Settings::default();
+        let island = Some(profiles::BottomIsland {
+            start_width: 580,
+            start_shift: -110,
+            tray_shift: -108,
+        });
+        for geometry in [None, island] {
+            settings.match_start_width = geometry.is_some();
+            for (id, profile) in IDS
+                .into_iter()
+                .zip(profiles::build(&settings, geometry).unwrap())
+            {
+                run_cli(
+                    &root,
+                    &["mod", "settings", "write", id, "-"],
+                    Some(&profile),
+                )
+                .unwrap();
+                let stored = run_cli(&root, &["mod", "settings", "get", id], None).unwrap();
+                assert_eq!(stored["settings"], profile, "{id}");
+            }
+        }
+    }
 }
