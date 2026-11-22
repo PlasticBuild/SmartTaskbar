@@ -10,11 +10,14 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Graphics::Gdi::*,
+    Graphics::{
+        Dwm::{DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DwmSetWindowAttribute},
+        Gdi::*,
+    },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_MENU},
-        Shell::ShellExecuteW,
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW},
         WindowsAndMessaging::*,
     },
 };
@@ -129,6 +132,21 @@ mod tests {
                 x: anchor.x,
                 y: anchor.y
             }));
+        }
+    }
+
+    #[test]
+    fn popup_region_rounds_only_the_top_corners() {
+        unsafe {
+            let region = popup_region(120, 70, 20);
+            assert!(!region.is_null());
+            let points = [(0, 0, 0), (119, 0, 0), (60, 0, 1), (0, 69, 1), (119, 69, 1)];
+            for (x, y, inside) in points {
+                assert_eq!(PtInRegion(region, x, y), inside);
+            }
+            assert_eq!(PtInRegion(region, 120, 69), 0);
+            assert_eq!(PtInRegion(region, 0, 70), 0);
+            DeleteObject(region);
         }
     }
 }
@@ -318,6 +336,64 @@ pub(super) fn foreground_changed(hwnd: HWND) {
     }
 }
 
+fn popup_region(width: i32, height: i32, diameter: i32) -> HRGN {
+    let diameter = diameter.min(width).min(height);
+    unsafe {
+        if diameter <= 0 {
+            return null_mut();
+        }
+        let rounded = CreateRoundRectRgn(0, 0, width, height, diameter, diameter);
+        let bottom = CreateRectRgn(0, height - diameter / 2, width, height);
+        let combined = !rounded.is_null()
+            && !bottom.is_null()
+            && CombineRgn(rounded, rounded, bottom, RGN_OR) != ERROR;
+        if !bottom.is_null() {
+            DeleteObject(bottom);
+        }
+        if combined {
+            rounded
+        } else {
+            if !rounded.is_null() {
+                DeleteObject(rounded);
+            }
+            null_mut()
+        }
+    }
+}
+
+unsafe extern "system" fn popup_frame(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    id: usize,
+    background: usize,
+) -> LRESULT {
+    unsafe {
+        if msg == WM_NCPAINT {
+            let mut window = RECT::default();
+            let mut client = RECT::default();
+            if GetWindowRect(hwnd, &mut window) != 0 && GetClientRect(hwnd, &mut client) != 0 {
+                let dc = GetWindowDC(hwnd);
+                if !dc.is_null() {
+                    MapWindowPoints(hwnd, null_mut(), (&raw mut client).cast(), 2);
+                    OffsetRect(&mut client, -window.left, -window.top);
+                    OffsetRect(&mut window, -window.left, -window.top);
+                    ExcludeClipRect(dc, client.left, client.top, client.right, client.bottom);
+                    SetDCBrushColor(dc, background as u32);
+                    FillRect(dc, &window, GetStockObject(DC_BRUSH) as HBRUSH);
+                    ReleaseDC(hwnd, dc);
+                    return 0;
+                }
+            }
+        }
+        if msg == WM_NCDESTROY {
+            RemoveWindowSubclass(hwnd, Some(popup_frame), id);
+        }
+        DefSubclassProc(hwnd, msg, wp, lp)
+    }
+}
+
 unsafe extern "system" fn menu_owner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         if paint_message(msg, lp) {
@@ -330,21 +406,31 @@ unsafe extern "system" fn menu_owner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
             let popup = lp as HWND;
             let mut bounds = RECT::default();
             if shaped != popup && is_our_popup(popup) && GetWindowRect(popup, &mut bounds) != 0 {
-                let region = CreateRoundRectRgn(
-                    0,
-                    0,
+                // Windows paints the native menu frame separately from owner-drawn items.
+                if let Some(paint) = MENU_PAINT.get() {
+                    SetWindowSubclass(popup, Some(popup_frame), 1, paint.bg as usize);
+                    DwmSetWindowAttribute(
+                        popup,
+                        DWMWA_BORDER_COLOR as u32,
+                        (&DWMWA_COLOR_NONE as *const u32).cast(),
+                        size_of::<u32>() as u32,
+                    );
+                }
+                let region = popup_region(
                     bounds.right - bounds.left,
                     bounds.bottom - bounds.top,
                     diameter,
-                    diameter,
                 );
-                if !region.is_null() {
-                    if SetWindowRgn(popup, region, 1) != 0 {
-                        MENU_SHAPE.set(Some((popup, diameter)));
-                    } else {
-                        DeleteObject(region);
-                    }
+                if !region.is_null() && SetWindowRgn(popup, region, 1) == 0 {
+                    DeleteObject(region);
                 }
+                MENU_SHAPE.set(Some((popup, diameter)));
+                RedrawWindow(
+                    popup,
+                    null(),
+                    null_mut(),
+                    RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW,
+                );
             }
         }
         DefWindowProcW(hwnd, msg, wp, lp)
@@ -447,7 +533,7 @@ pub(super) fn show_pending(settings: &Settings, config: &Path) {
         SetForegroundWindow(owner);
         ACTIVE_FOREGROUND.set(Some(GetForegroundWindow()));
         let radius = dip(i32::from(settings.radius), invocation.dpi);
-        MENU_SHAPE.set((radius > 0).then_some((null_mut(), radius * 2)));
+        MENU_SHAPE.set(Some((null_mut(), radius * 2)));
         let (point, align) = invocation.placement();
         let area = invocation.area;
         let params = TPMPARAMS {
