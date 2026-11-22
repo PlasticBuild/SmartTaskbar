@@ -56,7 +56,7 @@ pub(crate) fn activation_preview(
             Some(policy::activation_band(
                 bar.strip,
                 face,
-                settings.reveal(id).zone,
+                settings.reveal(id),
                 bar.dpi,
             ))
         })
@@ -185,6 +185,9 @@ pub fn taskbar_style_restored() {
 }
 
 unsafe extern "system" fn system_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if unsafe { bar_menu::paint_message(msg, lp) } {
+        return 1;
+    }
     let setting = if msg == WM_SETTINGCHANGE && lp != 0 {
         // Compare only the names we handle. The broadcast text belongs to Windows.
         ["ConvertibleSlateMode", "SystemDockMode", "TraySettings"]
@@ -894,8 +897,6 @@ impl Model {
             m.menu = active_panel;
             if labels
                 && visible
-                && !menu
-                && m.depth == Managed::thickness(m.snap.bar)
                 && let Some(point) = cursor
                 && face.unwrap_or(bar.bounds).contains(point)
             {

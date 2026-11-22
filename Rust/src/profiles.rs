@@ -218,7 +218,7 @@ fn taskbar(s: &Settings, joined: bool, reserve: crate::media::Reserve) -> Result
     let animate_icons = s.animate && (s.hover_lift != 0 || s.click_depth != 0);
     rule(
         &mut profile,
-        "Taskbar.TaskListButton",
+        "Taskbar.TaskListButton, Taskbar.ExperienceToggleButton[AutomationProperties.AutomationId=StartButton]",
         ["ToolTipService.ToolTip={x:Null}"],
     );
     {

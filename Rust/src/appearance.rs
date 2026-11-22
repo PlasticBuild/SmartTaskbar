@@ -38,6 +38,11 @@ pub(crate) fn app_label_colors() -> (u32, u32) {
     let palette = unsafe { preview::Palette::load() };
     (palette.card, palette.text)
 }
+
+pub(crate) fn taskbar_menu_colors() -> Option<(u32, u32, u32)> {
+    let p = unsafe { preview::Palette::load() };
+    (!p.high_contrast).then_some((p.card, p.text, preview::mix(p.card, p.text, 0.13)))
+}
 const LAYOUT: u16 = 101;
 const ALIGN: u16 = 102;
 const RADIUS: u16 = 103;
@@ -48,7 +53,6 @@ const ZONE: u16 = 107;
 const MOTION: u16 = 108;
 const SIGN_IN: u16 = 109;
 const FULLSCREEN: u16 = 112;
-const MENU: u16 = 113;
 const APPLY: u16 = 114;
 const ENGINE: u16 = 115;
 const MEDIA: u16 = 116;
@@ -70,6 +74,9 @@ const SHOW_ZONE: u16 = 131;
 const SETTINGS_SCROLL: u16 = 132;
 const APP_LABEL_DELAY: u16 = 133;
 const WINDOWS_TASKBAR_SETTINGS: u16 = 134;
+const ZONE_DEPTH: u16 = 135;
+const ZONE_WIDTH: u16 = 136;
+const SHOW_APP_LABELS: u16 = 137;
 const TIMER: usize = 1;
 const ICON_TIMER: usize = 2;
 const UPDATE_TIMER: usize = 3;
@@ -89,6 +96,8 @@ const LABELS: &[(u16, &str)] = &[
     (PRESS, "Click &depth"),
     (MONITOR, "Reveal settings for &display"),
     (ZONE, "Activation &zone"),
+    (ZONE_DEPTH, "Activation depth"),
+    (ZONE_WIDTH, "Activation width"),
     (OUTSIDE, "Outside edge &delay"),
     (SHARED, "Shared edge de&lay"),
     (APP_LABEL_DELAY, "App name hover delay"),
@@ -127,25 +136,56 @@ struct Page {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Appearance,
+    Reveal,
+    Options,
     Updates,
 }
 
+impl Tab {
+    fn shows(self, id: u16) -> bool {
+        match id {
+            ENGINE | TABS => true,
+            APPLY | WINDOWS_TASKBAR_SETTINGS => self != Self::Updates,
+            CHECK_UPDATES | RELEASES | REPOSITORY => self == Self::Updates,
+            LAYOUT | ALIGN | RADIUS | TRANSPARENCY | ICON_SIZE | HOVER | PRESS
+            | MATCH_MENU_WIDTH => self == Self::Appearance,
+            FULLSCREEN => self.preview(),
+            MONITOR | OVERRIDE | ZONE | SHOW_ZONE | ZONE_DEPTH | ZONE_WIDTH | OUTSIDE | SHARED => {
+                self == Self::Reveal
+            }
+            MOTION | SIGN_IN | SHOW_APP_LABELS | APP_LABEL_DELAY | MEDIA | MEDIA_SIDE
+            | REDIRECT | REDIRECT_PROVIDER | REMOVE_REDIRECT => self == Self::Options,
+            _ => false,
+        }
+    }
+
+    fn preview(self) -> bool {
+        matches!(self, Self::Appearance | Self::Reveal)
+    }
+}
+
 impl Page {
-    fn layout(width: i32, height: i32) -> Self {
+    fn layout(width: i32, height: i32, tab: Tab) -> Self {
         let inset = if width < 600 { 16 } else { 24 };
         let usable = (width - 2 * inset).max(180);
-        let (preview, settings) = if width >= 780 {
+        let show_preview = width >= 780 && tab.preview();
+        let controls_height = match tab {
+            Tab::Appearance => 412,
+            Tab::Reveal => 393,
+            Tab::Options => 400,
+            Tab::Updates => 228,
+        };
+        let (preview, settings) = if show_preview {
             let right = (usable * 39 / 100).clamp(330, 445);
             let left = usable - right - 20;
             (
-                Box2::at(inset, 102, left, (height - 175).clamp(360, 610)),
-                Box2::at(inset + left + 20, 102, right, 1024),
+                Box2::at(inset, 102, left, (height - 155).clamp(225, 550)),
+                Box2::at(inset + left + 20, 102, right, controls_height),
             )
         } else {
-            let h = (usable * 53 / 100).clamp(215, 340);
             (
-                Box2::at(inset, 102, usable, h),
-                Box2::at(inset, 102 + h + 14, usable, 1024),
+                Box2::at(inset, 102, usable, 0),
+                Box2::at(inset, 102, usable.min(650), controls_height + 45),
             )
         };
         Self {
@@ -169,34 +209,41 @@ impl Page {
             HOVER => (284, 25),
             PRESS => (330, 25),
             MATCH_MENU_WIDTH => (365, 23),
-            MONITOR => (410, 25),
-            OVERRIDE => (441, 23),
-            ZONE => (489, 25),
-            SHOW_ZONE => (519, 23),
-            OUTSIDE => (565, 25),
-            SHARED => (613, 25),
-            APP_LABEL_DELAY => (661, 25),
-            MOTION => (693, 23),
-            SIGN_IN => (719, 23),
-            MEDIA => (745, 23),
-            MEDIA_SIDE => (791, 25),
-            REDIRECT => (835, 23),
-            REDIRECT_PROVIDER => (881, 25),
-            REMOVE_REDIRECT => (921, 31),
-            WINDOWS_TASKBAR_SETTINGS => (966, 31),
+            MONITOR => (45, 25),
+            OVERRIDE => (77, 23),
+            ZONE => (123, 25),
+            SHOW_ZONE => (153, 23),
+            ZONE_DEPTH => (199, 25),
+            ZONE_WIDTH => (247, 25),
+            OUTSIDE => (295, 25),
+            SHARED => (343, 25),
+            SIGN_IN => (45, 23),
+            MOTION => (71, 23),
+            SHOW_APP_LABELS => (97, 23),
+            APP_LABEL_DELAY => (145, 25),
+            MEDIA => (177, 23),
+            MEDIA_SIDE => (223, 25),
+            REDIRECT => (261, 23),
+            REDIRECT_PROVIDER => (308, 25),
+            REMOVE_REDIRECT => (348, 31),
+            WINDOWS_TASKBAR_SETTINGS => {
+                let (card, left) = if self.preview.h > 0 {
+                    (self.preview, 136)
+                } else {
+                    (self.settings, 13)
+                };
+                return Box2::at(
+                    card.x + left,
+                    card.y + card.h - 43,
+                    240.min(card.w - left - 13),
+                    29,
+                );
+            }
             FULLSCREEN => {
                 return Box2::at(
                     self.preview.x + 13,
                     self.preview.y + self.preview.h - 43,
                     115,
-                    29,
-                );
-            }
-            MENU => {
-                return Box2::at(
-                    self.preview.x + 135,
-                    self.preview.y + self.preview.h - 43,
-                    112,
                     29,
                 );
             }
@@ -221,7 +268,7 @@ impl Page {
     }
     fn scene(self) -> Box2 {
         let p = self.preview;
-        Box2::at(p.x + 12, p.y + 45, p.w - 24, (p.h - 100).max(80))
+        Box2::at(p.x + 12, p.y + 45, p.w - 24, (p.h - 100).max(70))
     }
 }
 
@@ -272,7 +319,6 @@ struct State {
     monitors: Vec<Monitor>,
     monitor: Option<String>,
     tab: Tab,
-    settings_scroll: i32,
     update_job: Option<mpsc::Receiver<Result<updates::Status, String>>>,
     update_status: String,
     update_available: bool,
@@ -343,7 +389,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             path: settings_path.to_owned(),
             old: saved.clone(),
             draft: saved,
-            page: Page::layout(1000, 640),
+            page: Page::layout(1000, 640, Tab::Appearance),
             scroll: 0,
             scroll_max: 0,
             dpi: 96,
@@ -360,7 +406,6 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             monitors: crate::desktop::monitor_choices(),
             monitor: None,
             tab: Tab::Appearance,
-            settings_scroll: 0,
             update_job: None,
             update_status: String::new(),
             update_available: false,
@@ -378,7 +423,7 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             (1010 * scale / 96).min((area.right - area.left).max(440)),
-            (695 * scale / 96).min((area.bottom - area.top).max(360)),
+            (659 * scale / 96).min((area.bottom - area.top).max(360)),
             null_mut(),
             null_mut(),
             instance,
@@ -424,9 +469,9 @@ pub fn show(settings_path: &Path) -> Result<(), String> {
             if msg.message == WM_KEYDOWN && current != prior && IsChild(hwnd, current) != 0 {
                 let id = GetDlgCtrlID(current) as u16;
                 if ((LAYOUT..=SHARED).contains(&id)
-                    || (MATCH_MENU_WIDTH..=WINDOWS_TASKBAR_SETTINGS).contains(&id))
+                    || (MATCH_MENU_WIDTH..=SHOW_APP_LABELS).contains(&id))
                     && !matches!(id, ENGINE | APPLY)
-                    && state.tab == Tab::Appearance
+                    && state.tab.shows(id)
                 {
                     let b = state.page.control(id);
                     let mut visible = RECT::default();
@@ -489,7 +534,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_GETMINMAXINFO => {
                 let limits = &mut *(lp as *mut MINMAXINFO);
-                limits.ptMinTrackSize.x = 420 * (*ptr).dpi / 96;
+                limits.ptMinTrackSize.x = 550 * (*ptr).dpi / 96;
                 limits.ptMinTrackSize.y = 280 * (*ptr).dpi / 96;
                 0
             }
@@ -564,17 +609,18 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                             | SHARED
                             | REDIRECT_PROVIDER
                             | APP_LABEL_DELAY
+                            | ZONE_DEPTH
+                            | ZONE_WIDTH
                     ) {
                         read_controls(hwnd, ptr);
                     }
                 } else if note == BN_CLICKED {
                     match id {
-                        MATCH_MENU_WIDTH | MOTION | SIGN_IN | MEDIA | REDIRECT => {
-                            read_controls(hwnd, ptr)
-                        }
+                        MATCH_MENU_WIDTH | MOTION | SIGN_IN | MEDIA | REDIRECT
+                        | SHOW_APP_LABELS => read_controls(hwnd, ptr),
                         REMOVE_REDIRECT => remove_redirect(hwnd, ptr),
                         WINDOWS_TASKBAR_SETTINGS => open_windows_taskbar_settings(hwnd, ptr),
-                        MENU | FULLSCREEN => toggle_preview(hwnd, ptr, id),
+                        FULLSCREEN => toggle_preview(hwnd, ptr, true),
                         APPLY => save(hwnd, ptr),
                         ENGINE => engine(hwnd, ptr),
                         OVERRIDE => change_override(hwnd, ptr),
@@ -585,7 +631,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 }
                 if matches!(
                     id,
-                    ZONE | MONITOR | OVERRIDE | SHOW_ZONE | LAYOUT | ALIGN | APPLY
+                    ZONE | ZONE_DEPTH
+                        | ZONE_WIDTH
+                        | MONITOR
+                        | OVERRIDE
+                        | SHOW_ZONE
+                        | LAYOUT
+                        | ALIGN
+                        | APPLY
                 ) {
                     PostMessageW(hwnd, REFRESH_ZONE_PREVIEW, 0, 0);
                 }
@@ -626,7 +679,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 scroll(hwnd, ptr, -(((wp >> 16) as i16) as i32) * 48 / 120);
                 0
             }
-            WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP if (*ptr).tab == Tab::Appearance => {
+            WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP
+                if (*ptr).tab.preview() && (*ptr).page.preview.h > 0 =>
+            {
                 if (*ptr).ready {
                     pointer(
                         hwnd,
@@ -638,7 +693,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 }
                 0
             }
-            WM_MOUSELEAVE | WM_CAPTURECHANGED if (*ptr).tab == Tab::Appearance => {
+            WM_MOUSELEAVE | WM_CAPTURECHANGED if (*ptr).tab.preview() => {
                 (*ptr).demo.hot = None;
                 (*ptr).demo.over_edge = false;
                 (*ptr).demo.down = false;
@@ -715,11 +770,16 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
         for id in (LAYOUT..=TRANSPARENCY)
             .chain([ICON_SIZE])
             .chain(HOVER..=ZONE)
-            .chain([SHOW_ZONE])
+            .chain([SHOW_ZONE, ZONE_DEPTH, ZONE_WIDTH])
             .chain(MOTION..=SIGN_IN)
-            .chain(FULLSCREEN..=MEDIA_SIDE)
+            .chain([FULLSCREEN, APPLY, ENGINE, MEDIA, MEDIA_SIDE])
             .chain(MONITOR..=REMOVE_REDIRECT)
-            .chain([APP_LABEL_DELAY, SETTINGS_SCROLL, WINDOWS_TASKBAR_SETTINGS])
+            .chain([
+                SHOW_APP_LABELS,
+                APP_LABEL_DELAY,
+                SETTINGS_SCROLL,
+                WINDOWS_TASKBAR_SETTINGS,
+            ])
         {
             if let Some((_, caption)) = LABELS.iter().find(|(control, _)| *control == id) {
                 let label = CreateWindowExW(
@@ -740,7 +800,7 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
             }
             let (class, text, style) = match id {
                 LAYOUT | ALIGN | ZONE | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED
-                | REDIRECT_PROVIDER | APP_LABEL_DELAY => (
+                | REDIRECT_PROVIDER | APP_LABEL_DELAY | ZONE_DEPTH | ZONE_WIDTH => (
                     "COMBOBOX",
                     match id {
                         LAYOUT => "Layout",
@@ -751,6 +811,8 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                         SHARED => "Shared edge delay",
                         MEDIA_SIDE => "Media player side",
                         APP_LABEL_DELAY => "App name hover delay",
+                        ZONE_DEPTH => "Activation depth",
+                        ZONE_WIDTH => "Activation width",
                         _ => "Redirect search provider",
                     },
                     (CBS_DROPDOWNLIST | CBS_HASSTRINGS) as u32 | WS_VSCROLL,
@@ -799,13 +861,13 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
                     BS_AUTOCHECKBOX as u32,
                 ),
                 SHOW_ZONE => ("BUTTON", "Show activation zone", BS_AUTOCHECKBOX as u32),
+                SHOW_APP_LABELS => ("BUTTON", "Show app names on hover", BS_AUTOCHECKBOX as u32),
                 TABS => ("SysTabControl32", "", 0),
                 SETTINGS_SCROLL => ("SCROLLBAR", "", SBS_VERT as u32),
                 CHECK_UPDATES => ("BUTTON", "Check again", BS_PUSHBUTTON as u32),
                 RELEASES => ("BUTTON", "View releases", BS_PUSHBUTTON as u32),
                 REPOSITORY => ("BUTTON", "Open GitHub repository", BS_PUSHBUTTON as u32),
                 FULLSCREEN => ("BUTTON", "Go fullscreen", BS_PUSHBUTTON as u32),
-                MENU => ("BUTTON", "Open menu", BS_PUSHBUTTON as u32),
                 ENGINE => (
                     "BUTTON",
                     if (*state).engine {
@@ -927,13 +989,16 @@ unsafe fn create_controls(hwnd: HWND, state: *mut State) {
             (MOTION, s.draft.animate),
             (SIGN_IN, s.draft.start_at_sign_in),
             (MEDIA, s.draft.media_player),
+            (SHOW_APP_LABELS, s.draft.show_app_labels),
         ] {
             SendDlgItemMessageW(hwnd, id as i32, BM_SETCHECK, on as usize, 0);
         }
         (*state).paint.fonts((*state).dpi);
         (*state).paint.theme(hwnd);
         tab_item(hwnd, TCM_INSERTITEMW, 0, "Appearance");
-        tab_item(hwnd, TCM_INSERTITEMW, 1, "Updates");
+        tab_item(hwnd, TCM_INSERTITEMW, 1, "Reveal");
+        tab_item(hwnd, TCM_INSERTITEMW, 2, "Options");
+        tab_item(hwnd, TCM_INSERTITEMW, 3, "Updates");
         style_controls(hwnd, state);
         (*state).ready = true;
         monitor_controls(hwnd, state);
@@ -959,7 +1024,7 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
         } else {
             "Explorer"
         });
-        for id in LAYOUT..=WINDOWS_TASKBAR_SETTINGS {
+        for id in LAYOUT..=SHOW_APP_LABELS {
             let c = GetDlgItem(hwnd, id as i32);
             if c.is_null() {
                 continue;
@@ -977,6 +1042,8 @@ unsafe fn style_controls(hwnd: HWND, state: *mut State) {
                     | SHARED
                     | REDIRECT_PROVIDER
                     | APP_LABEL_DELAY
+                    | ZONE_DEPTH
+                    | ZONE_WIDTH
             ) {
                 let mut combo = COMBOBOXINFO {
                     cbSize: mem::size_of::<COMBOBOXINFO>() as u32,
@@ -997,11 +1064,11 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let dpi = (*state).dpi;
         let w = client.right * 96 / dpi;
         let h = client.bottom * 96 / dpi;
-        let page = Page::layout(w.saturating_sub(14), h);
-        let total = if (*state).tab != Tab::Appearance {
-            344.max(h)
+        let page = Page::layout(w.saturating_sub(14), h, (*state).tab);
+        let total = if (*state).tab == Tab::Updates {
+            344
         } else {
-            page.footer + 52
+            page.footer + 32
         };
         (*state).page = page;
         (*state).scroll_max = (total - h).max(0);
@@ -1026,6 +1093,14 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             SWP_NOACTIVATE | SWP_NOZORDER,
         );
         SetScrollInfo(scrollbar, SB_CTL, &info, 1);
+        ShowWindow(
+            scrollbar,
+            if (*state).scroll_max == 0 {
+                SW_HIDE
+            } else {
+                SW_SHOWNOACTIVATE
+            },
+        );
         position_controls(hwnd, &*state);
     }
 }
@@ -1041,16 +1116,14 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
         } = *state;
         let mut placements =
             Vec::with_capacity((APP_LABEL_DELAY - LAYOUT + 1) as usize + LABELS.len());
-        for id in (LAYOUT..=WINDOWS_TASKBAR_SETTINGS).filter(|&id| id != SETTINGS_SCROLL) {
+        for id in (LAYOUT..=SHOW_APP_LABELS).filter(|&id| id != SETTINGS_SCROLL) {
             let b = page.control(id);
             let label = GetDlgItem(hwnd, (LABEL + id) as i32);
             let fixed = matches!(id, ENGINE | TABS | APPLY);
             let y = b.y - if fixed { 0 } else { offset };
-            let show = match id {
-                ENGINE | TABS => true,
-                CHECK_UPDATES | RELEASES | REPOSITORY => tab == Tab::Updates && y > HEADER_HEIGHT,
-                _ => tab == Tab::Appearance && (fixed || y > HEADER_HEIGHT),
-            };
+            let show = tab.shows(id)
+                && (fixed || y > HEADER_HEIGHT)
+                && (id != FULLSCREEN || page.preview.h > 0);
             let control = GetDlgItem(hwnd, id as i32);
             if !label.is_null() {
                 let y_label = y - 19;
@@ -1071,6 +1144,8 @@ unsafe fn position_controls(hwnd: HWND, state: &State) {
                     | SHARED
                     | REDIRECT_PROVIDER
                     | APP_LABEL_DELAY
+                    | ZONE_DEPTH
+                    | ZONE_WIDTH
             ) {
                 180
             } else {
@@ -1207,6 +1282,16 @@ unsafe fn reveal_controls(hwnd: HWND, state: *mut State) {
         EnableWindow(GetDlgItem(hwnd, ZONE as i32), editable);
         for (id, selected, options) in [
             (
+                ZONE_DEPTH,
+                reveal.depth_dip,
+                &[2, 4, 6, 8, 12, 16, 20, 24, 32, 48, 64][..],
+            ),
+            (
+                ZONE_WIDTH,
+                reveal.width_percent,
+                &[10, 25, 50, 75, 90, 100, 125, 150, 175, 200][..],
+            ),
+            (
                 OUTSIDE,
                 reveal.outside_ms,
                 &[0, 80, 120, 180, 250, 400, 600, 800, 1000][..],
@@ -1230,10 +1315,11 @@ unsafe fn reveal_controls(hwnd: HWND, state: *mut State) {
                 values.sort_unstable();
             }
             for (index, ms) in values.into_iter().enumerate() {
-                let label = if ms == 0 {
-                    "Instant".into()
-                } else {
-                    format!("{ms} ms")
+                let label = match id {
+                    ZONE_DEPTH => format!("{ms} px at 100% scaling"),
+                    ZONE_WIDTH => format!("{ms}% of preset width"),
+                    _ if ms == 0 => "Instant".into(),
+                    _ => format!("{ms} ms"),
                 };
                 SendMessageW(combo, CB_ADDSTRING, 0, wide(&label).as_ptr() as isize);
                 SendMessageW(combo, CB_SETITEMDATA, index, ms as isize);
@@ -1297,14 +1383,19 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
         };
         reveal.outside_ms = delay(OUTSIDE as i32).unwrap_or(reveal.outside_ms);
         reveal.shared_ms = delay(SHARED as i32).unwrap_or(reveal.shared_ms);
+        reveal.depth_dip = delay(ZONE_DEPTH.into()).unwrap_or(reveal.depth_dip);
+        reveal.width_percent = delay(ZONE_WIDTH.into()).unwrap_or(reveal.width_percent);
         s.draft.app_label_delay_ms =
             delay(APP_LABEL_DELAY.into()).unwrap_or(s.draft.app_label_delay_ms);
+        s.draft.show_app_labels = check(SHOW_APP_LABELS.into());
         if let Some(key) = &s.monitor {
             if let Some(setting) = s.draft.monitor_reveal.get_mut(key) {
                 *setting = reveal;
             }
         } else {
             s.draft.zone = reveal.zone;
+            s.draft.activation_depth_dip = reveal.depth_dip;
+            s.draft.activation_width_percent = reveal.width_percent;
             s.draft.outside_dwell_ms = reveal.outside_ms;
             s.draft.shared_dwell_ms = reveal.shared_ms;
         }
@@ -1335,6 +1426,10 @@ unsafe fn read_controls(hwnd: HWND, state: *mut State) {
 unsafe fn reflect(hwnd: HWND, state: *mut State) {
     unsafe {
         let s = &*state;
+        EnableWindow(
+            GetDlgItem(hwnd, APP_LABEL_DELAY.into()),
+            s.draft.show_app_labels as i32,
+        );
         EnableWindow(GetDlgItem(hwnd, ALIGN as i32), s.draft.island as i32);
         EnableWindow(
             GetDlgItem(hwnd, MATCH_MENU_WIDTH as i32),
@@ -1522,14 +1617,15 @@ unsafe fn switch_tab(hwnd: HWND, state: *mut State) {
         let s = &mut *state;
         let selected = match SendDlgItemMessageW(hwnd, TABS as i32, TCM_GETCURSEL, 0, 0) {
             0 => Tab::Appearance,
-            1 => Tab::Updates,
+            1 => Tab::Reveal,
+            2 => Tab::Options,
+            3 => Tab::Updates,
             _ => return,
         };
         if selected == s.tab {
             return;
         }
-        if s.tab == Tab::Appearance {
-            s.settings_scroll = s.scroll;
+        if s.tab.preview() {
             s.demo.hot = None;
             s.demo.down = false;
             s.demo.over_edge = false;
@@ -1539,8 +1635,7 @@ unsafe fn switch_tab(hwnd: HWND, state: *mut State) {
         }
         s.tab = selected;
         s.scroll = 0;
-        if selected == Tab::Appearance {
-            s.scroll = s.settings_scroll;
+        if selected.preview() {
             if !s.paint.receive_icons() || s.paint.refresh_icons() {
                 SetTimer(hwnd, ICON_TIMER, 90, None);
             }
@@ -1600,7 +1695,7 @@ unsafe fn receive_updates(hwnd: HWND, state: *mut State) {
         tab_item(
             hwnd,
             TCM_SETITEMW,
-            1,
+            3,
             if s.update_available {
                 "Updates • New"
             } else {
@@ -1651,10 +1746,10 @@ unsafe fn open_github(hwnd: HWND, state: *mut State, id: u16) {
     }
 }
 
-unsafe fn toggle_preview(hwnd: HWND, state: *mut State, id: u16) {
+unsafe fn toggle_preview(hwnd: HWND, state: *mut State, fullscreen: bool) {
     unsafe {
         let demo = &mut (*state).demo;
-        if id == FULLSCREEN {
+        if fullscreen {
             demo.full = !demo.full;
             demo.menu = false;
             demo.over_edge = false;
@@ -1670,10 +1765,6 @@ unsafe fn toggle_preview(hwnd: HWND, state: *mut State, id: u16) {
                 "Go fullscreen"
             })
             .as_ptr(),
-        );
-        SetWindowTextW(
-            GetDlgItem(hwnd, MENU as i32),
-            wide(if demo.menu { "Close menu" } else { "Open menu" }).as_ptr(),
         );
         update_animation(hwnd, state);
     }
@@ -1734,7 +1825,7 @@ unsafe fn pointer(hwnd: HWND, state: *mut State, msg: u32, px: i32, py: i32) {
                     ReleaseCapture();
                 }
                 if clicked {
-                    toggle_preview(hwnd, state, MENU);
+                    toggle_preview(hwnd, state, false);
                 } else {
                     redraw(hwnd);
                 }
@@ -1837,15 +1928,22 @@ mod tests {
     }
 
     #[test]
-    fn controls_reflow_below_a_narrow_preview() {
-        let wide = Page::layout(1000, 640);
-        let narrow = Page::layout(600, 640);
+    fn settings_tabs_fit_without_scrolling_at_normal_sizes() {
+        let wide = Page::layout(1000, 640, Tab::Appearance);
+        let narrow = Page::layout(600, 640, Tab::Appearance);
         assert!(wide.settings.x >= wide.preview.x + wide.preview.w);
-        assert!(narrow.settings.y >= narrow.preview.y + narrow.preview.h);
+        assert_eq!(narrow.preview.h, 0);
         assert!(narrow.control(APPLY).y < narrow.preview.y);
         let tabs = narrow.control(TABS);
         assert!(tabs.x + tabs.w < narrow.control(APPLY).x);
-        assert!(narrow.control(SHARED).y < narrow.control(MEDIA_SIDE).y);
+        for tab in [Tab::Appearance, Tab::Reveal, Tab::Options] {
+            for width in [600, 1000] {
+                let page = Page::layout(width, 640, tab);
+                assert!(page.footer + 32 <= 640);
+                let button = page.control(WINDOWS_TASKBAR_SETTINGS);
+                assert!(button.y + button.h < page.footer);
+            }
+        }
     }
     #[test]
     fn preview_keeps_menu_visible_until_closed_and_honors_reduced_motion() {

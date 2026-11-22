@@ -345,7 +345,7 @@ pub(super) fn geometry(s: &State) -> Geometry {
     arrange(
         s.page.scene(),
         &s.draft,
-        s.draft.reveal(s.monitor.as_deref()).zone,
+        s.draft.reveal(s.monitor.as_deref()),
         s.paint.icons.len(),
         s.demo.shown,
         s.demo.open,
@@ -355,7 +355,7 @@ pub(super) fn geometry(s: &State) -> Geometry {
 fn arrange(
     scene: Box2,
     draft: &Settings,
-    zone: crate::settings::Zone,
+    reveal: crate::settings::Reveal,
     pins: usize,
     shown: f32,
     opened: f32,
@@ -414,7 +414,7 @@ fn arrange(
             )
         })
         .collect();
-    let band = activation_band(native, Some(resting), zone, dpi);
+    let band = activation_band(native, Some(resting), reveal, dpi);
     let to_box = |r: Rect| Box2::at(r.left, r.top, r.width(), r.height());
     let media = if draft.media_player && shown >= 0.99 && opened == 0.0 {
         crate::media::placement(
@@ -565,10 +565,16 @@ pub(super) unsafe fn paint(hwnd: HWND, s: &State) {
                 },
             );
         } else {
-            for (card, caption) in [
-                (p.preview, "Live preview"),
-                (p.settings, "Appearance & behavior"),
-            ] {
+            let heading = match s.tab {
+                Tab::Appearance => "Appearance",
+                Tab::Reveal => "Activation and reveal",
+                Tab::Options => "Behavior and integrations",
+                Tab::Updates => unreachable!(),
+            };
+            for (card, caption) in [(p.preview, "Live preview"), (p.settings, heading)] {
+                if card.h == 0 {
+                    continue;
+                }
                 c.round(card, 9, palette.card, palette.line);
                 c.text(
                     Box2::at(card.x + 14, card.y + 6, card.w - 28, 32),
@@ -584,6 +590,9 @@ pub(super) unsafe fn paint(hwnd: HWND, s: &State) {
                 (HOVER, format!("{} px", s.draft.hover_lift)),
                 (PRESS, format!("{} px", s.draft.click_depth)),
             ] {
+                if !s.tab.shows(id) {
+                    continue;
+                }
                 let control = p.control(id);
                 c.text(
                     Box2::at(control.x + control.w - 48, control.y - 19, 48, 18),
@@ -599,7 +608,9 @@ pub(super) unsafe fn paint(hwnd: HWND, s: &State) {
             } else {
                 ""
             };
-            draw_scene(&c, s);
+            if p.preview.h > 0 {
+                draw_scene(&c, s);
+            }
             c.text(
                 Box2::at(p.preview.x, p.footer, (p.width - 40).max(20), 32),
                 notice,
@@ -815,8 +826,8 @@ mod tests {
                 alignment,
                 ..Settings::default()
             };
-            let first = arrange(scene, &settings, settings.zone, 1, 1.0, 0.01);
-            let last = arrange(scene, &settings, settings.zone, 1, 1.0, 1.0);
+            let first = arrange(scene, &settings, settings.reveal(None), 1, 1.0, 0.01);
+            let last = arrange(scene, &settings, settings.reveal(None), 1, 1.0, 1.0);
             assert_eq!(
                 (first.menu_box.x, first.menu_box.y, first.menu_box.w),
                 (last.menu_box.x, last.menu_box.y, last.menu_box.w)
@@ -838,7 +849,7 @@ mod tests {
             zone: Zone::Center,
             ..Settings::default()
         };
-        let g = arrange(scene, &settings, settings.zone, 12, 0.0, 0.0);
+        let g = arrange(scene, &settings, settings.reveal(None), 12, 0.0, 0.0);
         assert_eq!(g.bar.w, scene.w);
         assert_eq!(g.bar.y, scene.y + scene.h);
         assert_eq!(g.activation.x, scene.x + scene.w / 4);

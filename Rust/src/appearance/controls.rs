@@ -214,7 +214,7 @@ unsafe fn paint(hwnd: HWND, dc: HDC, id: u16, state: &State) {
                 );
             }
             LAYOUT | ALIGN | ZONE | MEDIA_SIDE | MONITOR | OUTSIDE | SHARED | REDIRECT_PROVIDER
-            | APP_LABEL_DELAY => {
+            | APP_LABEL_DELAY | ZONE_DEPTH | ZONE_WIDTH => {
                 let border = if focus { p.accent } else { p.line };
                 round(dc, r, px(8), surface, border);
                 GetWindowTextW(hwnd, caption.as_mut_ptr(), caption.len() as i32);
@@ -235,7 +235,8 @@ unsafe fn paint(hwnd: HWND, dc: HDC, id: u16, state: &State) {
                 LineTo(dc, x, y + px(2));
                 LineTo(dc, x + px(5), y - px(3));
             }
-            SHOW_ZONE | MATCH_MENU_WIDTH | MOTION | SIGN_IN | MEDIA | REDIRECT | OVERRIDE => {
+            SHOW_ZONE | SHOW_APP_LABELS | MATCH_MENU_WIDTH | MOTION | SIGN_IN | MEDIA
+            | REDIRECT | OVERRIDE => {
                 let checked = SendMessageW(hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
                 let y = r.bottom / 2;
                 let mark = RECT {

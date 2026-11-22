@@ -174,13 +174,13 @@ fn pixels(dip: i32, dpi: u32) -> i32 {
     ((i64::from(dip) * i64::from(dpi) + 48) / 96).min(i64::from(i32::MAX)) as i32
 }
 
-pub fn activation_band(bar: NativeBar, island: Option<Rect>, zone: Zone, dpi: u32) -> Rect {
-    let (start, end) = bar.edge.span(bar.display);
-    let (start, end) = match zone {
-        Zone::Entire => (start, end),
+pub fn activation_band(bar: NativeBar, island: Option<Rect>, reveal: Reveal, dpi: u32) -> Rect {
+    let (low, high) = bar.edge.span(bar.display);
+    let (start, end) = match reveal.zone {
+        Zone::Entire => (low, high),
         Zone::Center => {
-            let quarter = end.saturating_sub(start) / 4;
-            (start + quarter, end - quarter)
+            let quarter = high.saturating_sub(low) / 4;
+            (low + quarter, high - quarter)
         }
         Zone::Island => bar.edge.span(
             island
@@ -188,8 +188,12 @@ pub fn activation_band(bar: NativeBar, island: Option<Rect>, zone: Zone, dpi: u3
                 .unwrap_or(bar.bounds),
         ),
     };
-    let mut band = bar.edge.with_span(bar.display, start, end);
-    let depth = pixels(12, dpi).max(1);
+    let base = end - start;
+    let width = ((i64::from(base) * i64::from(reveal.width_percent) + 50) / 100)
+        .clamp(1, i64::from(high - low)) as i32;
+    let start = (start + (base - width).div_euclid(2)).clamp(low, high - width);
+    let mut band = bar.edge.with_span(bar.display, start, start + width);
+    let depth = pixels(reveal.depth_dip.into(), dpi).max(1);
     match bar.edge {
         Edge::Left => band.right = band.left.saturating_add(depth).min(band.right),
         Edge::Right => band.left = band.right.saturating_sub(depth).max(band.left),
@@ -261,7 +265,7 @@ impl HoverState {
             return true;
         }
 
-        let in_band = activation_band(bar, island, reveal.zone, dpi).contains(cursor);
+        let in_band = activation_band(bar, island, reveal, dpi).contains(cursor);
         let face = island
             .and_then(|rect| rect.intersection(bar.bounds))
             .unwrap_or(bar.bounds);
@@ -573,13 +577,49 @@ mod tests {
     }
 
     #[test]
+    fn activation_width_and_depth_scale_independently_at_the_shared_edge() {
+        let bar = dock(UPPER, Edge::Bottom);
+        let reveal = Reveal {
+            depth_dip: 20,
+            width_percent: 50,
+            ..Reveal::default()
+        };
+        let band = activation_band(bar, None, reveal, 144);
+        assert_eq!(band.height(), 30);
+        assert_eq!(band.width(), UPPER.width() / 2);
+        assert_eq!(band.bottom, UPPER.bottom);
+        assert_eq!(band.left - UPPER.left, UPPER.right - band.right);
+        let wide = activation_band(
+            bar,
+            None,
+            Reveal {
+                width_percent: 200,
+                ..reveal
+            },
+            144,
+        );
+        assert_eq!(wide.width(), UPPER.width());
+    }
+
+    #[test]
     fn activation_zones_follow_orientation_and_dpi() {
         for edge in [Edge::Left, Edge::Top, Edge::Right, Edge::Bottom] {
             let bar = dock(UPPER, edge);
             let face = island_rect(bar, 220, Alignment::Right, 192);
-            let entire = activation_band(bar, Some(face), Zone::Entire, 192);
-            let half = activation_band(bar, Some(face), Zone::Center, 192);
-            let island = activation_band(bar, Some(face), Zone::Island, 192);
+            let band = |zone| {
+                activation_band(
+                    bar,
+                    Some(face),
+                    Reveal {
+                        zone,
+                        ..Reveal::default()
+                    },
+                    192,
+                )
+            };
+            let entire = band(Zone::Entire);
+            let half = band(Zone::Center);
+            let island = band(Zone::Island);
             assert_eq!(UPPER.intersection(entire), Some(entire));
             assert_eq!(edge.span(island), edge.span(face));
             let (a, b) = edge.span(entire);
@@ -595,7 +635,7 @@ mod tests {
             );
         }
         assert_eq!(
-            activation_band(dock(LOWER, Edge::Bottom), None, Zone::Entire, 0).height(),
+            activation_band(dock(LOWER, Edge::Bottom), None, Reveal::default(), 0).height(),
             12
         );
     }

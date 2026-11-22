@@ -1,5 +1,5 @@
 use super::bar_menu::Hook;
-use super::native::{Bar, window_pid};
+use super::native::Bar;
 use crate::{
     policy::{Edge, Point, Rect},
     settings::Settings,
@@ -45,6 +45,7 @@ pub(super) struct Hover {
     surface: Option<Surface>,
     entered: Option<(usize, u64)>,
     started: u64,
+    retry_at: u64,
     window: Popup,
     menu_hook: Hook,
 }
@@ -57,15 +58,19 @@ impl Hover {
         now: u64,
     ) -> Option<u32> {
         let Some((bar, point, area)) = target.filter(|(bar, point, _)| unsafe {
-            window_pid(WindowFromPoint(POINT {
-                x: point.x,
-                y: point.y,
-            })) == bar.pid
+            GetAncestor(
+                WindowFromPoint(POINT {
+                    x: point.x,
+                    y: point.y,
+                }),
+                GA_ROOT,
+            ) == bar.hwnd
         }) else {
             self.window.hide();
             self.surface = None;
             self.entered = None;
             self.input = None;
+            self.retry_at = 0;
             self.menu_hook.track(None);
             return None;
         };
@@ -81,16 +86,19 @@ impl Hover {
             && !matches!(result, Err(TryRecvError::Empty))
         {
             self.pending = None;
-            if self.input == Some(input)
-                && let Ok(Some(data)) = result
-            {
-                self.surface = Some(Surface {
-                    labels: data.labels,
-                    occupied: data.occupied.into(),
-                });
+            if self.input == Some(input) {
+                if let Ok(Some(data)) = result {
+                    self.surface = Some(Surface {
+                        labels: data.labels,
+                        occupied: data.occupied.into(),
+                    });
+                } else {
+                    self.input = None;
+                    self.retry_at = now.saturating_add(500);
+                }
             }
         }
-        if self.pending.is_none() && self.input != Some(input) {
+        if self.pending.is_none() && self.input != Some(input) && now >= self.retry_at {
             self.input = Some(input);
             self.started = now;
             let (tx, rx) = mpsc::sync_channel(1);
@@ -111,6 +119,11 @@ impl Hover {
         };
         self.menu_hook
             .track(Some((bar.hwnd, area, surface.occupied.clone())));
+        if !settings.show_app_labels {
+            self.entered = None;
+            self.window.hide();
+            return Some(45);
+        }
         let mouse_down = unsafe {
             GetAsyncKeyState(VK_LBUTTON.into()) < 0 || GetAsyncKeyState(VK_RBUTTON.into()) < 0
         };
@@ -155,6 +168,8 @@ struct SurfaceData {
 }
 
 fn probe(hwnd: usize, edge: Edge, dpi: u32) -> Option<SurfaceData> {
+    // A new accessibility worker otherwise receives virtualized coordinates.
+    let _dpi = super::DpiScope::enter();
     unsafe {
         if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
             return None;
@@ -202,11 +217,18 @@ fn probe(hwnd: usize, edge: Edge, dpi: u32) -> Option<SurfaceData> {
                 if anchor.is_empty() {
                     continue;
                 }
-                if element.CurrentClassName().ok()? != "Taskbar.TaskListButtonAutomationPeer" {
+                let is_app =
+                    element.CurrentClassName().ok()? == "Taskbar.TaskListButtonAutomationPeer";
+                let is_start = !is_app && element.CurrentAutomationId().ok()? == "StartButton";
+                if !is_app && !is_start {
                     data.occupied.push(anchor);
                     continue;
                 }
-                let hit = icon_hit(anchor, edge, dpi);
+                let hit = if is_app {
+                    icon_hit(anchor, edge, dpi)
+                } else {
+                    anchor
+                };
                 data.occupied.push(hit);
                 let raw = element.CurrentName().ok()?.to_string();
                 let name = raw.strip_suffix(" pinned").unwrap_or(&raw);
@@ -224,11 +246,21 @@ fn probe(hwnd: usize, edge: Edge, dpi: u32) -> Option<SurfaceData> {
                     });
                 }
             }
+            data.occupied
+                .retain(|r| !spans_multiple_icons(*r, &data.labels));
             (!data.occupied.is_empty()).then_some(data)
         })();
         CoUninitialize();
         data
     }
+}
+
+fn spans_multiple_icons(area: Rect, labels: &[Label]) -> bool {
+    labels
+        .iter()
+        .filter(|label| area.intersection(label.hit) == Some(label.hit))
+        .nth(1)
+        .is_some()
 }
 
 fn icon_hit(mut bounds: Rect, edge: Edge, dpi: u32) -> Rect {
@@ -256,6 +288,60 @@ fn icon_hit(mut bounds: Rect, edge: Edge, dpi: u32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a live Explorer taskbar with pinned apps"]
+    fn reads_app_labels_from_the_live_taskbar() {
+        let _dpi = super::super::DpiScope::enter();
+        let bars = super::super::native::bars();
+        assert!(!bars.is_empty());
+        for bar in bars {
+            let surface = probe(bar.hwnd as usize, bar.strip.edge, bar.dpi)
+                .expect("taskbar accessibility surface");
+            let hwnd = bar.hwnd as usize;
+            let edge = bar.strip.edge;
+            let dpi = bar.dpi;
+            let worker = std::thread::spawn(move || probe(hwnd, edge, dpi))
+                .join()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                surface
+                    .labels
+                    .iter()
+                    .map(|label| label.anchor)
+                    .collect::<Vec<_>>(),
+                worker
+                    .labels
+                    .iter()
+                    .map(|label| label.anchor)
+                    .collect::<Vec<_>>(),
+                "background queries must use the same physical coordinates as the controller"
+            );
+            eprintln!(
+                "{} labels, {} occupied controls",
+                surface.labels.len(),
+                surface.occupied.len()
+            );
+            assert!(!surface.labels.is_empty(), "the taskbar has no app labels");
+        }
+    }
+
+    #[test]
+    fn discards_icon_row_container_from_the_menu_hit_map() {
+        let label = |left| {
+            let anchor = Rect::new(left, 0, left + 44, 48);
+            Label {
+                name: String::new(),
+                anchor,
+                hit: icon_hit(anchor, Edge::Bottom, 96),
+            }
+        };
+        let labels = [label(0), label(44)];
+        assert!(spans_multiple_icons(Rect::new(0, 0, 88, 48), &labels));
+        assert!(!spans_multiple_icons(labels[0].anchor, &labels));
+        assert!(!spans_multiple_icons(Rect::new(88, 0, 152, 48), &labels));
+    }
 
     #[test]
     fn preserves_icon_centers_and_creates_gaps_in_both_orientations() {
@@ -391,7 +477,7 @@ unsafe fn create(bar: Bar, label: &Label) -> Option<HWND> {
     }
 }
 
-unsafe fn font(dpi: u32) -> HFONT {
+pub(super) unsafe fn font(dpi: u32) -> HFONT {
     unsafe {
         CreateFontW(
             -13 * dpi as i32 / 96,

@@ -25,6 +25,8 @@ pub enum Zone {
 #[serde(default)]
 pub struct Reveal {
     pub zone: Zone,
+    pub depth_dip: u16,
+    pub width_percent: u16,
     pub outside_ms: u16,
     pub shared_ms: u16,
 }
@@ -33,6 +35,8 @@ impl Default for Reveal {
     fn default() -> Self {
         Self {
             zone: Zone::Entire,
+            depth_dip: 12,
+            width_percent: 100,
             outside_ms: 120,
             shared_ms: 220,
         }
@@ -57,10 +61,13 @@ pub struct Settings {
     pub icon_size: u8,
     pub hover_lift: u8,
     pub app_label_delay_ms: u16,
+    pub show_app_labels: bool,
     pub click_depth: u8,
     pub animate: bool,
     pub alignment: Alignment,
     pub zone: Zone,
+    pub activation_depth_dip: u16,
+    pub activation_width_percent: u16,
     pub outside_dwell_ms: u16,
     pub shared_dwell_ms: u16,
     pub monitor_reveal: BTreeMap<String, Reveal>,
@@ -81,10 +88,13 @@ impl Default for Settings {
             icon_size: 100,
             hover_lift: 2,
             app_label_delay_ms: 250,
+            show_app_labels: true,
             click_depth: 1,
             animate: true,
             alignment: Alignment::Center,
             zone: Zone::Entire,
+            activation_depth_dip: Reveal::default().depth_dip,
+            activation_width_percent: Reveal::default().width_percent,
             outside_dwell_ms: Reveal::default().outside_ms,
             shared_dwell_ms: Reveal::default().shared_ms,
             monitor_reveal: BTreeMap::new(),
@@ -128,6 +138,8 @@ impl Settings {
             .and_then(|key| self.monitor_reveal.get(key).copied())
             .unwrap_or(Reveal {
                 zone: self.zone,
+                depth_dip: self.activation_depth_dip,
+                width_percent: self.activation_width_percent,
                 outside_ms: self.outside_dwell_ms,
                 shared_ms: self.shared_dwell_ms,
             })
@@ -146,14 +158,22 @@ impl Settings {
         if !PROVIDERS.contains(&self.web_engine.as_str()) {
             return Err(format!("Unknown search provider: {}", self.web_engine));
         }
-        let valid = |r: Reveal| r.outside_ms <= 1000 && (150..=1000).contains(&r.shared_ms);
+        let valid = |r: Reveal| {
+            r.outside_ms <= 1000
+                && (150..=1000).contains(&r.shared_ms)
+                && (2..=64).contains(&r.depth_dip)
+                && (10..=200).contains(&r.width_percent)
+        };
         if !valid(self.reveal(None))
             || self
                 .monitor_reveal
                 .iter()
                 .any(|(id, r)| id.is_empty() || !valid(*r))
         {
-            return Err("Taskbar reveal delays are outside the supported range.".into());
+            return Err(
+                "Taskbar activation dimensions or reveal delays are outside the supported range."
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -268,6 +288,7 @@ mod tests {
             zone: Zone::Center,
             outside_ms: 80,
             shared_ms: 400,
+            ..Reveal::default()
         };
         settings.monitor_reveal.insert("display-b".into(), custom);
         assert_eq!(settings.reveal(Some("display-b")), custom);
