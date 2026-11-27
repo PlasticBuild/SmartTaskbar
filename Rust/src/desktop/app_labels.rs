@@ -349,9 +349,38 @@ mod tests {
                 surface.occupied.len()
             );
             assert!(!surface.labels.is_empty(), "the taskbar has no app labels");
-            if std::env::var_os("SMARTTASKBAR_VERIFY_VISIBLE_CONTROLS").is_some() {
-                for label in &surface.labels {
-                    let bounds = label.anchor;
+            let check_spacing = std::env::var_os("SMARTTASKBAR_VERIFY_ISLAND_SPACING").is_some();
+            if check_spacing || std::env::var_os("SMARTTASKBAR_VERIFY_VISIBLE_CONTROLS").is_some() {
+                let mut controls = surface
+                    .labels
+                    .iter()
+                    .map(|label| label.anchor)
+                    .collect::<Vec<_>>();
+                if check_spacing {
+                    let face = super::super::lease::current_compact(bar).expect("visible island");
+                    let app_end = controls.iter().map(|bounds| bounds.right).max().unwrap();
+                    let tray = surface
+                        .occupied
+                        .iter()
+                        .copied()
+                        .filter(|bounds| bounds.left >= app_end && bounds.height() < face.height())
+                        .collect::<Vec<_>>();
+                    let tray_start = tray
+                        .iter()
+                        .map(|bounds| bounds.left)
+                        .min()
+                        .expect("visible tray");
+                    let gap = super::super::native::px_to_dip(tray_start - app_end, bar.dpi);
+                    eprintln!("tray gap: {gap} DIP, {} tray controls", tray.len());
+                    assert!((0..=16).contains(&gap));
+                    assert!(
+                        tray.iter()
+                            .all(|bounds| face.intersection(*bounds) == Some(*bounds)),
+                        "tray clipped"
+                    );
+                    controls.extend(tray);
+                }
+                for bounds in controls {
                     let center = POINT {
                         x: bounds.left + bounds.width() / 2,
                         y: bounds.top + bounds.height() / 2,

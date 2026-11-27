@@ -33,6 +33,7 @@
   "controlStyles[5].styles[1]": "HorizontalAlignment={{$Horizontal?`Left`:skip()}}",
   "controlStyles[5].styles[2]": "Width={{$Horizontal?`Auto`:skip()}}",
   "controlStyles[5].styles[3]": "ActualWidth=>TrayMeasured",
+  "controlStyles[5].styles[8]": "Margin={{$Horizontal?($Embedded?skip():`-48,0,0,0`):skip()}}",
   "controlStyles[6].target": "Taskbar.TaskbarFrame > Grid#RootGrid > Microsoft.UI.Xaml.Controls.ItemsRepeater#TaskbarFrameRepeater",
   "controlStyles[6].styles[0]": "HorizontalAlignment={{$Embedded?`Left`:skip()}}",
   "controlStyles[6].styles[1]": "Width={{$Embedded?max($Width-12,0):skip()}}",

@@ -305,6 +305,7 @@ impl Snapshot {
             super::ISLAND_STYLER_ACTIVE.load(Ordering::Relaxed) || previous & STYLER_OUTLINE != 0;
         if depth == full {
             let current = Region::read(self.bar.hwnd)?;
+            let mut retained_styled_outline = false;
             if current.as_ref().is_some_and(|region| {
                 region.bounds().is_none()
                     || self
@@ -312,17 +313,14 @@ impl Snapshot {
                         .as_ref()
                         .is_some_and(|clip| clip.same_shape(region))
             }) {
-                // Clearing our temporary clip triggers Windhawk's window-position handler
-                // to rebuild the island around the current task buttons and system tray.
-                let visible = if use_styler {
-                    None
-                } else {
-                    self.baseline_copy()?
-                };
+                // Keep the known island through the last animation frame. Removing the
+                // region here lets Explorer briefly draw the entire or uncentered taskbar.
+                let visible = reveal_region(self.baseline.as_ref(), self.compact, use_styler)?;
+                retained_styled_outline = use_styler && visible.is_some();
                 Region::apply(self.bar.hwnd, visible)?;
             }
             self.temporary_clip = None;
-            self.mark(OUTLINE | STYLER_OUTLINE, false);
+            self.mark(OUTLINE | STYLER_OUTLINE, retained_styled_outline);
             super::SHELL_LAYOUT_CHANGED.store(true, Ordering::Relaxed);
             return Ok(());
         }
@@ -345,6 +343,18 @@ impl Snapshot {
         self.temporary_clip = Some(temporary_clip);
         Ok(())
     }
+}
+
+fn reveal_region(
+    baseline: Option<&Region>,
+    compact: Option<Rect>,
+    styled: bool,
+) -> Result<Option<Region>, String> {
+    if styled && compact.is_none() {
+        // Allow the styler to build a new outline when none has been measured yet.
+        return Ok(None);
+    }
+    baseline.map(Region::duplicate).transpose()
 }
 
 fn centered_outline_offset(local: Rect, strip_width: i32, dpi: u32) -> i32 {
@@ -437,5 +447,17 @@ mod tests {
             centered_outline_offset(Rect::new(0, 0, 2860, 96), 2880, 192),
             0
         );
+    }
+
+    #[test]
+    fn reveal_retains_the_compact_outline_on_its_final_frame() {
+        let bounds = Rect::new(900, 3, 1950, 96);
+        let styled = Region::rect(bounds).unwrap();
+        let visible = reveal_region(Some(&styled), Some(bounds), true)
+            .unwrap()
+            .unwrap();
+        assert!(visible.same_shape(&styled));
+        assert!(reveal_region(Some(&styled), None, true).unwrap().is_none());
+        assert!(reveal_region(Some(&styled), None, false).unwrap().is_some());
     }
 }
