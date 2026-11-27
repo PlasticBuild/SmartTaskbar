@@ -295,6 +295,31 @@ mod tests {
         let _dpi = super::super::DpiScope::enter();
         let bars = super::super::native::bars();
         assert!(!bars.is_empty());
+        if std::env::var_os("SMARTTASKBAR_TRACE_REVEAL").is_some() {
+            let mut scene = super::super::native::Scene::default();
+            super::super::native::refresh_scene(
+                &mut Default::default(),
+                &mut scene,
+                &mut Vec::new(),
+            );
+            eprintln!("foreground fullscreen {:?}", scene.foreground_fullscreen);
+            for bar in &bars {
+                let face = super::super::lease::current_compact(*bar);
+                eprintln!(
+                    "bar {:?}, region empty {}, face {face:?}",
+                    bar.strip.bounds,
+                    super::super::lease::region_empty(*bar)
+                );
+                for window in &scene.windows {
+                    if crate::policy::is_covered(bar.strip, face, std::slice::from_ref(window)) {
+                        eprintln!(
+                            "cover {:?} on {:?}, maximized {}",
+                            window.bounds, window.home, window.maximized
+                        );
+                    }
+                }
+            }
+        }
         for bar in bars {
             let surface = probe(bar.hwnd as usize, bar.strip.edge, bar.dpi)
                 .expect("taskbar accessibility surface");
@@ -324,6 +349,24 @@ mod tests {
                 surface.occupied.len()
             );
             assert!(!surface.labels.is_empty(), "the taskbar has no app labels");
+            if std::env::var_os("SMARTTASKBAR_VERIFY_VISIBLE_CONTROLS").is_some() {
+                for label in &surface.labels {
+                    let bounds = label.anchor;
+                    let center = POINT {
+                        x: bounds.left + bounds.width() / 2,
+                        y: bounds.top + bounds.height() / 2,
+                    };
+                    let hit = unsafe { GetAncestor(WindowFromPoint(center), GA_ROOT) };
+                    assert_eq!(
+                        hit,
+                        bar.hwnd,
+                        "taskbar does not receive input at ({}, {}), found {}",
+                        center.x,
+                        center.y,
+                        super::super::native::window_class(hit)
+                    );
+                }
+            }
         }
     }
 

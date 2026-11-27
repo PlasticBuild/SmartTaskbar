@@ -117,6 +117,10 @@ fn template(text: &str, s: &Settings) -> Result<Profile, String> {
                     "0"
                 },
             )
+            .replace(
+                "__EXTERNAL_ALIGNMENT__",
+                if s.alignment == Alignment::Center { "Center" } else { "Right" },
+            )
             .replace("__RADIUS__", &s.radius.to_string())
             .replace("__TRANSPARENCY__", &s.transparency.to_string())
             .replace(
@@ -158,7 +162,12 @@ fn rotation_guard(profile: &mut Profile) {
     rule(
         profile,
         ":root > ScrollViewer",
-        ["ActualWidth=>HostWidth", "ActualHeight=>HostHeight"],
+        [
+            "ActualWidth=>HostWidth",
+            "ActualHeight=>HostHeight",
+            "HorizontalAlignment=Stretch",
+            "HorizontalContentAlignment=Stretch",
+        ],
     );
 }
 

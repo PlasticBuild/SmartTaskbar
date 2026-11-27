@@ -162,7 +162,12 @@ pub fn is_covered(bar: NativeBar, island: Option<Rect>, windows: &[WindowSample]
         .and_then(|face| face.intersection(strip))
         .unwrap_or(strip);
     windows.iter().any(|window| {
-        window.bounds.intersection(face).is_some()
+        // Adjacent window and taskbar bounds can round onto the same physical
+        // pixel at mixed scaling or across a snapped window's border.
+        window
+            .bounds
+            .intersection(face)
+            .is_some_and(|overlap| overlap.width() > 1 && overlap.height() > 1)
             || (window.maximized
                 && window.home == bar.display
                 && window.bounds.intersection(bar.display).is_some())
@@ -564,13 +569,23 @@ mod tests {
         let margin = Rect::new(UPPER.left, face.top, face.left, face.bottom);
         assert!(is_covered(bar, None, &[sample(margin)]));
         assert!(!is_covered(bar, Some(face), &[sample(margin)]));
+        assert!(!is_covered(
+            bar,
+            Some(face),
+            &[sample(Rect::new(
+                face.left,
+                face.top - 400,
+                face.right,
+                face.top + 1
+            ))]
+        ));
         assert!(is_covered(
             bar,
             Some(face),
             &[sample(Rect::new(
                 face.left - 1,
                 face.top,
-                face.left + 1,
+                face.left + 2,
                 face.bottom
             ))]
         ));

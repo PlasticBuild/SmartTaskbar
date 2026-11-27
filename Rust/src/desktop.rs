@@ -468,11 +468,19 @@ impl Managed {
             bar.strip.bounds.width()
         }
     }
-    fn observe(&mut self, bar: Bar, guard: &mut rescue::Monitor) -> Result<(), String> {
+    fn observe(
+        &mut self,
+        bar: Bar,
+        guard: &mut rescue::Monitor,
+        centered: bool,
+    ) -> Result<(), String> {
         if self.reflow.as_ref().is_some_and(|motion| motion.clipped) {
             return Ok(());
         }
         let full = Self::thickness(bar);
+        if centered && self.depth == full && ISLAND_STYLER_ACTIVE.load(Ordering::Relaxed) {
+            self.snap.center_unplaced_outline()?;
+        }
         if bar.display.work == self.snap.bar.display.work {
             self.snap.displace_work();
         }
@@ -646,7 +654,12 @@ struct Model {
     native_touch: bool,
 }
 impl Model {
-    fn sync(&mut self, guard: &mut rescue::Monitor, topology_changed: bool) -> Result<(), String> {
+    fn sync(
+        &mut self,
+        guard: &mut rescue::Monitor,
+        topology_changed: bool,
+        centered: bool,
+    ) -> Result<(), String> {
         if topology_changed || self.monitors.is_empty() {
             self.monitors = native::monitors();
             self.displays = self.monitors.iter().map(|m| m.bounds).collect();
@@ -679,7 +692,7 @@ impl Model {
         for bar in bars {
             let key = bar.hwnd as usize;
             if let Some(m) = self.managed.get_mut(&key) {
-                m.observe(bar, guard)?;
+                m.observe(bar, guard, centered)?;
             } else if let Some(m) = Managed::attach(bar, guard)? {
                 self.managed.insert(key, m);
             }
@@ -1141,7 +1154,11 @@ pub fn run(initial: &Settings, settings_path: &Path) -> Result<(), String> {
             next_sync = next_sync.min(now + 27);
         }
         if now >= next_sync {
-            model.sync(&mut guard, topology_changed)?;
+            model.sync(
+                &mut guard,
+                topology_changed,
+                settings.island && settings.alignment == crate::settings::Alignment::Center,
+            )?;
             next_sync = now
                 + if model.managed.values().any(|m| m.reflow.is_some()) {
                     27

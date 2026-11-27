@@ -244,6 +244,28 @@ impl Snapshot {
         }
         Ok(false)
     }
+    pub fn center_unplaced_outline(&self) -> Result<(), String> {
+        let bar = self.bar;
+        if !bar.strip.edge.horizontal() || !self.owns() {
+            return Ok(());
+        }
+        let Some(region) = Region::read(bar.hwnd)? else {
+            return Ok(());
+        };
+        let Some(local) = region.bounds() else {
+            return Ok(());
+        };
+        let offset = centered_outline_offset(local, bar.strip.bounds.width(), bar.dpi);
+        if offset != 0 && compact_bounds(bar, local).is_some() {
+            if unsafe { OffsetRgn(region.0, offset, 0) } == ERROR {
+                return Err("Could not center the floating taskbar outline.".into());
+            }
+            if self.mark(OUTLINE, true) && self.mark(STYLER_OUTLINE, true) {
+                Region::apply(bar.hwnd, Some(region))?;
+            }
+        }
+        Ok(())
+    }
     pub fn raise(&self, on: bool) {
         if !self.owns() {
             return;
@@ -325,6 +347,18 @@ impl Snapshot {
     }
 }
 
+fn centered_outline_offset(local: Rect, strip_width: i32, dpi: u32) -> i32 {
+    // On affected Explorer layouts the visual tree centers the island, but the
+    // styler returns the same compact region in coordinates starting at zero.
+    // Leave positioned regions and nearly full-width islands alone.
+    let offset = (strip_width - local.width()) / 2;
+    if local.left == 0 && native::px_to_dip(offset, dpi) >= 12 {
+        offset
+    } else {
+        0
+    }
+}
+
 pub(super) fn current_compact(bar: Bar) -> Option<Rect> {
     compact_bounds(bar, Region::read(bar.hwnd).ok()??.bounds()?)
 }
@@ -387,5 +421,21 @@ mod tests {
             Rect::new(0, 0, 1920, 13)
         );
         assert!(edge_clip(Edge::Right, 48, 1080, 0).is_empty());
+    }
+
+    #[test]
+    fn rebases_only_a_leading_edge_outline_with_room_to_center() {
+        assert_eq!(
+            centered_outline_offset(Rect::new(0, 0, 1339, 96), 2880, 192),
+            770
+        );
+        assert_eq!(
+            centered_outline_offset(Rect::new(902, 0, 1977, 96), 2880, 192),
+            0
+        );
+        assert_eq!(
+            centered_outline_offset(Rect::new(0, 0, 2860, 96), 2880, 192),
+            0
+        );
     }
 }

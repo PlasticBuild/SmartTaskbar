@@ -27,7 +27,7 @@
   "controlStyles[4].styles[1]": "Width={{$Horizontal?`Auto`:skip()}}",
   "controlStyles[4].styles[2]": "MinWidth={{$Embedded?$Inset+$Width:skip()}}",
   "controlStyles[4].styles[3]": "MaxWidth={{$Horizontal?($Embedded?`Infinity`:max(BarWidth-$ExternalTray-24,1)):skip()}}",
-  "controlStyles[4].styles[4]": "HorizontalAlignment={{$Horizontal?($Embedded?`Left`:`Right`):skip()}}",
+  "controlStyles[4].styles[4]": "HorizontalAlignment={{$Horizontal?($Embedded?`Left`:`__EXTERNAL_ALIGNMENT__`):skip()}}",
   "controlStyles[5].target": "SystemTray.SystemTrayFrame",
   "controlStyles[5].styles[0]": "Grid.Column={{$Horizontal?2:skip()}}",
   "controlStyles[5].styles[1]": "HorizontalAlignment={{$Horizontal?`Left`:skip()}}",

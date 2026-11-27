@@ -149,6 +149,53 @@ mod tests {
             DeleteObject(region);
         }
     }
+
+    #[test]
+    fn menu_clicks_use_the_tracked_window_bounds() {
+        let _dpi = super::super::DpiScope::enter();
+        let popup = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                windows_sys::w!("STATIC"),
+                null(),
+                WS_POPUP | WS_VISIBLE,
+                -16_000,
+                -16_000,
+                360,
+                136,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null(),
+            )
+        };
+        assert!(!popup.is_null());
+        let mut frame = RECT::default();
+        assert_ne!(unsafe { GetWindowRect(popup, &mut frame) }, 0);
+        let first_row = POINT {
+            x: frame.left + 30,
+            y: frame.top + 30,
+        };
+        let second_row = POINT {
+            x: frame.left + 30,
+            y: frame.top + 100,
+        };
+        let outside = POINT {
+            x: frame.right,
+            y: frame.top + 30,
+        };
+        let pending_click = clicked_outside_popup(outside);
+        MENU_SHAPE.set(Some((popup, 0)));
+        let clicks = [
+            clicked_outside_popup(first_row),
+            clicked_outside_popup(second_row),
+            clicked_outside_popup(outside),
+        ];
+        MENU_SHAPE.set(None);
+        unsafe { DestroyWindow(popup) };
+        assert!(!pending_click);
+        assert_eq!(clicks, [false, false, true]);
+    }
 }
 
 thread_local! { static MENU_PAINT: Cell<Option<MenuPaint>> = const { Cell::new(None) }; }
@@ -258,7 +305,7 @@ unsafe extern "system" fn mouse(code: i32, message: WPARAM, data: LPARAM) -> LRE
                 WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
             ) {
                 let pt = (*(data as *const MSLLHOOKSTRUCT)).pt;
-                if !is_our_popup(WindowFromPoint(pt)) {
+                if clicked_outside_popup(pt) {
                     // End tracking before letting this same click reach the shell or app.
                     EndMenu();
                 }
@@ -324,6 +371,25 @@ fn is_our_popup(hwnd: HWND) -> bool {
         return false;
     }
     super::native::window_class(hwnd) == "#32768"
+}
+
+fn clicked_outside_popup(point: POINT) -> bool {
+    let Some((popup, _)) = MENU_SHAPE.get() else {
+        return false;
+    };
+    if popup.is_null() {
+        // Until WM_ENTERIDLE identifies the menu, let Windows handle clicks.
+        return false;
+    }
+    let _dpi = super::DpiScope::enter();
+    let mut bounds = RECT::default();
+    unsafe {
+        // Native menus capture the mouse. A window lookup at the pointer can
+        // report the app underneath even when the click belongs to a menu row.
+        GetWindowRect(popup, &mut bounds) != 0
+            && IsWindowVisible(popup) != 0
+            && PtInRect(&bounds, point) == 0
+    }
 }
 
 pub(super) fn foreground_changed(hwnd: HWND) {
