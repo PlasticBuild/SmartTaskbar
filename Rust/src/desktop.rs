@@ -253,6 +253,16 @@ unsafe extern "system" fn change(
     if event == EVENT_SYSTEM_FOREGROUND {
         bar_menu::foreground_changed(h);
     }
+    if matches!(
+        event,
+        EVENT_OBJECT_SHOW | EVENT_OBJECT_LOCATIONCHANGE | EVENT_SYSTEM_FOREGROUND
+    ) && object == 0
+        && child == 0
+        && !h.is_null()
+        && unsafe { GetAncestor(h, GA_ROOT) } == h
+    {
+        bar_menu::native_menu_shown(h);
+    }
     if !h.is_null()
         && (event == EVENT_SYSTEM_FOREGROUND
             || (object == 0
@@ -852,7 +862,12 @@ impl Model {
                         &mut m.thumbnail_hover,
                     )
                 });
+                let native_menu = bar_menu::native_menu_pending(m.snap.bar.hwnd);
+                if native_menu {
+                    delay = delay.min(40);
+                }
                 let shell_menu = panel.is_some()
+                    || native_menu
                     || self.scene.menus.contains(&bar.display)
                     || thumbnail_held
                     || hovered_thumbnail == Some(bar.display);

@@ -29,6 +29,7 @@ Var Existing
 Var Registered
 Var Stage
 Var ReplaceStyle
+Var PopupSwap
 Var Reason
 
 !define MUI_ABORTWARNING
@@ -149,6 +150,10 @@ Section "SmartTaskbar (required)" Application
         ExecWait '"$Stage\${APP}" --verify-style --config "$INSTDIR\settings.json"' $0
         IfErrors backup_style
         StrCmp $0 0 reuse_style
+        ExecWait '"$Stage\${APP}" --verify-popup-upgrade --config "$INSTDIR\settings.json"' $0
+        IfErrors check_legacy
+        StrCmp $0 0 upgrade_popup
+    check_legacy:
         # A previously injected SearchHost can keep the directory locked after the host stops.
         # The verified engine and mods are the same. Update their scope file in place.
         ExecWait '"$Stage\${APP}" --verify-legacy-style --config "$INSTDIR\settings.json"' $0
@@ -160,6 +165,29 @@ Section "SmartTaskbar (required)" Application
         CopyFiles /SILENT "$INSTDIR\Windhawk\AppData\Engine\settings.ini" "$Stage\prior\engine"
         IfErrors restore
         CopyFiles /SILENT "$Stage\Windhawk\AppData\Engine\settings.ini" "$INSTDIR\Windhawk\AppData\Engine"
+        IfErrors restore
+        ExecWait '"$Stage\${APP}" --verify-style --config "$INSTDIR\settings.json"' $0
+        IfErrors restore
+        StrCmp $0 0 reuse_style restore
+    upgrade_popup:
+        # Keep the shell-loaded host and install the new module under its unique DLL name.
+        StrCpy $Reason "Updating taskbar popup placement"
+        CreateDirectory "$Stage\prior\popup"
+        ClearErrors
+        IfFileExists "$INSTDIR\Windhawk\AppData\Engine\Mods\local@smarttaskbar-jump-lists.ini" 0 popup_source_backup
+        CopyFiles /SILENT "$INSTDIR\Windhawk\AppData\Engine\Mods\local@smarttaskbar-jump-lists.ini" "$Stage\prior\popup"
+        IfErrors restore
+    popup_source_backup:
+        IfFileExists "$INSTDIR\Windhawk\AppData\ModsSource\local@smarttaskbar-jump-lists.wh.cpp" 0 popup_copy
+        CopyFiles /SILENT "$INSTDIR\Windhawk\AppData\ModsSource\local@smarttaskbar-jump-lists.wh.cpp" "$Stage\prior\popup"
+        IfErrors restore
+    popup_copy:
+        StrCpy $PopupSwap 1
+        CopyFiles /SILENT "$Stage\Windhawk\AppData\Engine\Mods\64\${POPUP_DLL}" "$INSTDIR\Windhawk\AppData\Engine\Mods\64"
+        IfErrors restore
+        CopyFiles /SILENT "$Stage\Windhawk\AppData\ModsSource\local@smarttaskbar-jump-lists.wh.cpp" "$INSTDIR\Windhawk\AppData\ModsSource"
+        IfErrors restore
+        CopyFiles /SILENT "$Stage\Windhawk\AppData\Engine\Mods\local@smarttaskbar-jump-lists.ini" "$INSTDIR\Windhawk\AppData\Engine\Mods"
         IfErrors restore
         ExecWait '"$Stage\${APP}" --verify-style --config "$INSTDIR\settings.json"' $0
         IfErrors restore
@@ -198,6 +226,15 @@ Section "SmartTaskbar (required)" Application
     restore_app:
         Delete "$INSTDIR\${APP}"
     restore:
+        StrCmp $PopupSwap 1 0 restore_engine
+        Delete "$INSTDIR\Windhawk\AppData\Engine\Mods\local@smarttaskbar-jump-lists.ini"
+        Delete "$INSTDIR\Windhawk\AppData\ModsSource\local@smarttaskbar-jump-lists.wh.cpp"
+        IfFileExists "$Stage\prior\popup\local@smarttaskbar-jump-lists.ini" 0 restore_popup_source
+        CopyFiles /SILENT "$Stage\prior\popup\local@smarttaskbar-jump-lists.ini" "$INSTDIR\Windhawk\AppData\Engine\Mods"
+    restore_popup_source:
+        IfFileExists "$Stage\prior\popup\local@smarttaskbar-jump-lists.wh.cpp" 0 restore_engine
+        CopyFiles /SILENT "$Stage\prior\popup\local@smarttaskbar-jump-lists.wh.cpp" "$INSTDIR\Windhawk\AppData\ModsSource"
+    restore_engine:
         IfFileExists "$Stage\prior\engine\settings.ini" 0 restore_style
         CopyFiles /SILENT "$Stage\prior\engine\settings.ini" "$INSTDIR\Windhawk\AppData\Engine"
     restore_style:

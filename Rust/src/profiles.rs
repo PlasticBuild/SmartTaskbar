@@ -1,4 +1,4 @@
-//! Windhawk settings for its four native shell styling components. The three shared
+//! Windhawk settings for the native shell styling components. The three shared
 //! SmartTaskbar appearance templates are retained in their original location and covered
 //! by the repository's MIT license (see ../../LICENSE). Shell control names are the
 //! selectors exposed by the installed Windhawk stylers.
@@ -9,11 +9,12 @@ use crate::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub const IDS: [&str; 4] = [
+pub const IDS: [&str; 5] = [
     "windows-11-taskbar-styler",
     "windows-11-start-menu-styler",
     "windows-11-notification-center-styler",
     "shell-flyout-positions",
+    "local@smarttaskbar-jump-lists",
 ];
 
 type Profile = BTreeMap<String, String>;
@@ -456,6 +457,10 @@ pub fn build_with_reserve(
         start_menu(s, start_geometry),
         notifications(s, joined),
         positions(geometry, start_geometry),
+        Profile::from([(
+            "snapToAppButton".into(),
+            (if s.island { "1" } else { "0" }).into(),
+        )]),
     ]
     .into_iter()
     .map(|map| serde_json::to_value(map).map_err(|err| err.to_string()))
@@ -550,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn four_complete_profiles_have_contiguous_styles_and_no_tokens() {
+    fn complete_profiles_have_contiguous_styles_and_no_tokens() {
         for s in [
             Settings::default(),
             Settings {
@@ -569,7 +574,7 @@ mod tests {
                         map.values()
                             .all(|v| !v.as_str().unwrap().contains(['\r', '\n']))
                     );
-                    if i == 3 {
+                    if i >= 3 {
                         continue;
                     }
                     for collection in ["controlStyles", "webContentStyles"] {
@@ -592,6 +597,10 @@ mod tests {
                         }
                     }
                 }
+                assert_eq!(
+                    profiles[4]["snapToAppButton"],
+                    if s.island { "1" } else { "0" }
+                );
             }
         }
     }

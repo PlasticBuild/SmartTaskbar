@@ -36,6 +36,7 @@ struct Label {
 struct Surface {
     labels: Vec<Label>,
     occupied: Rc<[Rect]>,
+    apps: Rc<[Rect]>,
 }
 
 #[derive(Default)]
@@ -91,6 +92,7 @@ impl Hover {
                     self.surface = Some(Surface {
                         labels: data.labels,
                         occupied: data.occupied.into(),
+                        apps: data.apps.into(),
                     });
                 } else {
                     self.input = None;
@@ -117,8 +119,12 @@ impl Hover {
         let Some(surface) = &self.surface else {
             return self.pending.as_ref().map(|_| 32);
         };
-        self.menu_hook
-            .track(Some((&bar, area, surface.occupied.clone())));
+        self.menu_hook.track(Some((
+            &bar,
+            area,
+            surface.occupied.clone(),
+            surface.apps.clone(),
+        )));
         if !settings.show_app_labels {
             self.entered = None;
             self.window.hide();
@@ -165,6 +171,7 @@ impl Hover {
 struct SurfaceData {
     labels: Vec<Label>,
     occupied: Vec<Rect>,
+    apps: Vec<Rect>,
 }
 
 fn probe(hwnd: usize, edge: Edge, dpi: u32) -> Option<SurfaceData> {
@@ -189,6 +196,7 @@ fn probe(hwnd: usize, edge: Edge, dpi: u32) -> Option<SurfaceData> {
             let mut data = SurfaceData {
                 labels: Vec::new(),
                 occupied: Vec::new(),
+                apps: Vec::new(),
             };
             let count = elements.Length().ok()?;
             if count > 512 {
@@ -230,6 +238,9 @@ fn probe(hwnd: usize, edge: Edge, dpi: u32) -> Option<SurfaceData> {
                     anchor
                 };
                 data.occupied.push(hit);
+                if is_app {
+                    data.apps.push(hit);
+                }
                 let raw = element.CurrentName().ok()?.to_string();
                 let name = raw.strip_suffix(" pinned").unwrap_or(&raw);
                 let name = name

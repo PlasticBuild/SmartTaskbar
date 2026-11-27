@@ -117,7 +117,7 @@ fn visual_bounds(h: HWND) -> Option<Rect> {
     window_rect(h)
 }
 
-fn cloaked(h: HWND) -> bool {
+pub(super) fn cloaked(h: HWND) -> bool {
     let mut flags = 0u32;
     unsafe { DwmGetWindowAttribute(h, DWMWA_CLOAKED as u32, (&mut flags as *mut u32).cast(), 4) };
     flags != 0

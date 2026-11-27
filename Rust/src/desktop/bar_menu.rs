@@ -7,6 +7,7 @@ use std::{
     path::Path,
     ptr::{null, null_mut},
     rc::Rc,
+    time::Instant,
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -14,7 +15,11 @@ use windows_sys::Win32::{
         Dwm::{DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DwmSetWindowAttribute},
         Gdi::*,
     },
-    System::LibraryLoader::GetModuleHandleW,
+    System::{
+        LibraryLoader::GetModuleHandleW,
+        SystemInformation::GetTickCount64,
+        Threading::{GetThreadDescription, OpenThread, THREAD_QUERY_LIMITED_INFORMATION},
+    },
     UI::{
         Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_MENU},
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW},
@@ -27,6 +32,8 @@ struct State {
     surface: Option<Surface>,
     down: Option<POINT>,
     pending: Option<Invocation>,
+    native_menu_request: Option<NativeMenuRequest>,
+    native_menu: Option<NativeMenu>,
 }
 
 struct Surface {
@@ -35,7 +42,25 @@ struct Surface {
     edge: Edge,
     dpi: u32,
     controls: Rc<[Rect]>,
+    apps: Rc<[Rect]>,
 }
+
+const JUMP_ANCHOR: *const u16 = windows_sys::w!("SmartTaskbar.Rust.JumpList.Anchor");
+const JUMP_REQUESTED_AT: *const u16 = windows_sys::w!("SmartTaskbar.Rust.JumpList.RequestedAt");
+
+#[derive(Clone, Copy)]
+struct NativeMenuRequest {
+    bar: HWND,
+    clicked: Instant,
+}
+
+struct NativeMenu {
+    request: NativeMenuRequest,
+    popup: HWND,
+    opened: bool,
+}
+
+type HoverSurface<'a> = (&'a super::native::Bar, Rect, Rc<[Rect]>, Rc<[Rect]>);
 
 #[derive(Clone, Copy)]
 struct Invocation {
@@ -196,6 +221,13 @@ mod tests {
         assert!(!pending_click);
         assert_eq!(clicks, [false, false, true]);
     }
+
+    #[test]
+    fn native_jump_list_anchor_preserves_signed_physical_coordinates() {
+        let anchor = button_center(Rect::new(-720, -48, -676, 0));
+        assert_eq!(anchor as i32, -698);
+        assert_eq!((anchor >> 32) as i32, -24);
+    }
 }
 
 thread_local! { static MENU_PAINT: Cell<Option<MenuPaint>> = const { Cell::new(None) }; }
@@ -266,15 +298,16 @@ unsafe fn paint_message(msg: u32, data: LPARAM) -> bool {
 pub(super) struct Hook(HHOOK);
 
 impl Hook {
-    pub fn track(&mut self, surface: Option<(&super::native::Bar, Rect, Rc<[Rect]>)>) {
+    pub fn track(&mut self, surface: Option<HoverSurface<'_>>) {
         let needed = surface.is_some() || STATE.with(|state| state.borrow().down.is_some());
         STATE.with(|state| {
-            state.borrow_mut().surface = surface.map(|(bar, area, controls)| Surface {
+            state.borrow_mut().surface = surface.map(|(bar, area, controls, apps)| Surface {
                 bar: bar.hwnd,
                 area,
                 edge: bar.strip.edge,
                 dpi: bar.dpi,
                 controls,
+                apps,
             });
         });
         unsafe {
@@ -353,6 +386,22 @@ unsafe extern "system" fn mouse(code: i32, message: WPARAM, data: LPARAM) -> LRE
                     }
                     return true;
                 }
+                if let Some(surface) = &state.surface
+                    && surface.area.contains(point)
+                    && let Some(&button) = surface.apps.iter().find(|r| r.contains(point))
+                    && GetAncestor(WindowFromPoint(pt), GA_ROOT) == surface.bar
+                {
+                    let bar = surface.bar;
+                    state.native_menu_request = Some(NativeMenuRequest {
+                        bar,
+                        clicked: Instant::now(),
+                    });
+                    let anchor = button_center(button);
+                    if SetPropW(bar, JUMP_ANCHOR, anchor as HANDLE) != 0 {
+                        SetPropW(bar, JUMP_REQUESTED_AT, GetTickCount64() as usize as HANDLE);
+                    }
+                    super::DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 false
             });
             if consume {
@@ -361,6 +410,98 @@ unsafe extern "system" fn mouse(code: i32, message: WPARAM, data: LPARAM) -> LRE
         }
         CallNextHookEx(null_mut(), code, message, data)
     }
+}
+
+pub(super) fn native_menu_pending(bar: HWND) -> bool {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if let Some(menu) = &mut state.native_menu {
+            if unsafe { IsWindowVisible(menu.popup) } != 0 && !super::native::cloaked(menu.popup) {
+                menu.opened = true;
+                return menu.request.bar == bar;
+            }
+            if !menu.opened && menu.request.clicked.elapsed().as_millis() < 1200 {
+                return menu.request.bar == bar;
+            }
+            state.native_menu = None;
+        }
+        state.native_menu_request.is_some_and(|request| {
+            request.bar == bar && request.clicked.elapsed().as_millis() < 1200
+        })
+    })
+}
+
+pub(super) fn native_menu_shown(hwnd: HWND) {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let Some(request) = state.native_menu_request else {
+            return;
+        };
+        if request.clicked.elapsed().as_millis() >= 1200 {
+            return;
+        }
+        let mut popup_pid = 0;
+        let mut shell_pid = 0;
+        let thread = unsafe {
+            GetWindowThreadProcessId(request.bar, &mut shell_pid);
+            GetWindowThreadProcessId(hwnd, &mut popup_pid)
+        };
+        let class = super::native::window_class(hwnd);
+        let legacy_menu = popup_pid != 0
+            && popup_pid == shell_pid
+            && matches!(class.as_str(), "JumpListHost" | "DV2ControlHost");
+        let xaml_menu = matches!(
+            class.as_str(),
+            "Windows.UI.Core.CoreWindow" | "XamlExplorerHostIslandWindow"
+        ) && is_jump_list_thread(thread)
+            && (popup_pid == shell_pid
+                || super::native::process_path(popup_pid)
+                    .and_then(|path| {
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                    })
+                    .is_some_and(|name| {
+                        name.eq_ignore_ascii_case("ShellExperienceHost.exe")
+                            || name.eq_ignore_ascii_case("ShellHost.exe")
+                    }));
+        if legacy_menu || xaml_menu {
+            state.native_menu = Some(NativeMenu {
+                request,
+                popup: hwnd,
+                opened: false,
+            });
+            state.native_menu_request = None;
+        }
+    });
+}
+
+fn is_jump_list_thread(thread_id: u32) -> bool {
+    const NAME: &str = "JumpViewUI";
+    unsafe {
+        let thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, thread_id);
+        if thread.is_null() {
+            return false;
+        }
+        let mut description = null_mut();
+        let result = GetThreadDescription(thread, &mut description);
+        CloseHandle(thread);
+        if result < 0 || description.is_null() {
+            return false;
+        }
+        let matched = NAME
+            .encode_utf16()
+            .chain([0])
+            .enumerate()
+            .all(|(i, expected)| *description.add(i) == expected);
+        LocalFree(description.cast());
+        matched
+    }
+}
+
+fn button_center(button: Rect) -> u64 {
+    let x = button.left + button.width() / 2;
+    let y = button.top + button.height() / 2;
+    u64::from(x as u32) | (u64::from(y as u32) << 32)
 }
 
 fn is_our_popup(hwnd: HWND) -> bool {

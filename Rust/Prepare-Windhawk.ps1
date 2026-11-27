@@ -12,9 +12,9 @@ if (Get-Process -Name windhawk -ErrorAction SilentlyContinue) {
     throw 'Close Windhawk before preparing the portable instance.'
 }
 
-$installer = Join-Path $output 'windhawk-2.0.0-alpha.8-setup.exe'
-$url = 'https://github.com/ramensoftware/windhawk/releases/download/2.0.0-alpha.8/windhawk_setup.exe'
-$expected = '7327471E2D93A8C58481321CCE546632ADB146CF125D17D7144D0E7D2A064967'
+$installer = Join-Path $output 'windhawk-2.0.0-alpha.8-offline-setup.exe'
+$url = 'https://github.com/ramensoftware/windhawk/releases/download/2.0.0-alpha.8/windhawk_setup_offline.exe'
+$expected = 'C0D5435CB12001BDAF1E349EC562591A134D532F2FB910A2B81F9964341978A2'
 if (!(Test-Path -LiteralPath $installer)) {
     Invoke-WebRequest -Uri $url -OutFile $installer
 }
@@ -59,6 +59,9 @@ try {
         & $cli --app-root $portable mod install @module --disabled
         if ($LASTEXITCODE -ne 0) { throw "Could not install $($module[0])." }
     }
+    $popupAnchors = Join-Path $PSScriptRoot 'assets/windhawk/smarttaskbar-jump-lists.wh.cpp'
+    & $cli mod install --app-root $portable --file $popupAnchors --arch x64 --disabled
+    if ($LASTEXITCODE -ne 0) { throw 'Could not compile SmartTaskbar Popup Anchors.' }
 }
 finally {
     $engine = Get-Process -Name windhawk -ErrorAction SilentlyContinue |

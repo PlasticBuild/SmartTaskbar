@@ -20,7 +20,7 @@ use windows_sys::Win32::{
     System::Threading::WaitForSingleObject,
 };
 
-const VERSIONS: [&str; 4] = ["1.11.2", "1.8", "1.8", "1.3.1"];
+const VERSIONS: [&str; IDS.len()] = ["1.11.2", "1.8", "1.8", "1.3.1", "1.1"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Module {
@@ -120,19 +120,31 @@ fn run_cli(root: &Path, args: &[&str], input: Option<&Value>) -> Result<Value, S
 }
 
 fn inventory(root: &Path) -> Result<Vec<Value>, String> {
+    read_inventory(root, false)
+}
+
+fn read_inventory(root: &Path, allow_prior: bool) -> Result<Vec<Value>, String> {
     let list = run_cli(root, &["mod", "list"], None)?;
     let modules = list["mods"]
         .as_array()
         .ok_or("Malformed module inventory")?;
-    if modules.len() != IDS.len() {
-        return Err("Use the dedicated four-module SmartTaskbar styling profile.".into());
+    let count = modules.len();
+    if count != IDS.len() && !(allow_prior && count == IDS.len() - 1) {
+        return Err("Use the dedicated SmartTaskbar styling profile.".into());
     }
     IDS.iter()
         .zip(VERSIONS)
+        .take(count)
         .map(|(id, version)| {
             modules
                 .iter()
-                .find(|v| v["id"] == *id && v["version"] == version)
+                .find(|v| {
+                    v["id"] == *id
+                        && (v["version"] == version
+                            || (allow_prior
+                                && *id == "local@smarttaskbar-jump-lists"
+                                && v["version"] == "1.0"))
+                })
                 .cloned()
                 .ok_or_else(|| format!("Expected {id} {version}"))
         })
@@ -199,6 +211,26 @@ pub fn verify_packaged_style(root: &Path, allow_legacy_search: bool) -> Result<(
     Ok(())
 }
 
+pub fn verify_popup_upgrade(root: &Path) -> Result<(), String> {
+    let bundled = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .with_file_name("Windhawk");
+    for file in ["windhawk-core.dll", "Engine/2.0.0/64/windhawk.dll"] {
+        if fs::read(root.join(file)).map_err(|e| e.to_string())?
+            != fs::read(bundled.join(file)).map_err(|e| e.to_string())?
+        {
+            return Err("The existing Windhawk engine differs from the bundled engine.".into());
+        }
+    }
+    let windows = PathBuf::from(std::env::var_os("SystemRoot").ok_or("Missing Windows directory")?);
+    let settings = run_cli(root, &["app", "settings", "get"], None)?;
+    if !scope_ok(&settings, &windows, false) {
+        return Err("The existing styling host uses a different Windows shell scope.".into());
+    }
+    read_inventory(root, true)?;
+    Ok(())
+}
+
 pub fn stop_packaged_style(config: &Path) -> Result<(), String> {
     let Some(dir) = config.parent() else {
         return Ok(());
@@ -228,7 +260,7 @@ pub fn stop_packaged_style(config: &Path) -> Result<(), String> {
     ) {
         return Err("The running styling host is outside SmartTaskbar's shell scope.".into());
     }
-    inventory(&root)?;
+    read_inventory(&root, true)?;
     let status = Command::new(&path)
         .args(["-exit", "-wait"])
         .creation_flags(0x08000000)

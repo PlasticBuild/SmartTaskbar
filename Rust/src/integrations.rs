@@ -18,7 +18,9 @@ use windows_sys::Win32::{
 
 pub(crate) mod search;
 mod shell;
-pub use shell::{configure_packaged_style, stop_packaged_style, verify_packaged_style};
+pub use shell::{
+    configure_packaged_style, stop_packaged_style, verify_packaged_style, verify_popup_upgrade,
+};
 
 use profiles::Geometry;
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

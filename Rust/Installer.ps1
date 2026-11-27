@@ -25,6 +25,9 @@ foreach ($item in 'Engine','ModsRuntime','windhawk.exe','windhawk-cli.exe','wind
     'windhawk-mod.exe','windhawk-mod-elevated.exe','windhawk-mod-uiaccess.exe','windhawk-ui.exe','windhawk.ini') {
     Copy-Item -LiteralPath (Join-Path $style $item) -Destination $hostRoot -Recurse
 }
+$hostIni = Join-Path $hostRoot 'windhawk.ini'
+(Get-Content -LiteralPath $hostIni -Raw) -replace '(?m)^CompilerPath=.*','CompilerPath=' |
+    Set-Content -LiteralPath $hostIni -Encoding ascii
 if (!(Test-Path -LiteralPath (Join-Path $hostRoot 'Engine/2.0.0') -PathType Container)) {
     throw 'Expected the portable Windhawk 2.0.0-alpha.8 engine.'
 }
@@ -49,6 +52,12 @@ $mods = [ordered]@{
     'windows-11-start-menu-styler' = '1.8'
     'windows-11-notification-center-styler' = '1.8'
     'shell-flyout-positions' = '1.3.1'
+    'local@smarttaskbar-jump-lists' = '1.1'
+}
+$jumpSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'assets/windhawk/smarttaskbar-jump-lists.wh.cpp') -Raw
+$compiledSource = Get-Content -LiteralPath (Join-Path $style 'AppData/ModsSource/local@smarttaskbar-jump-lists.wh.cpp') -Raw
+if (($jumpSource -replace "\r\n","`n") -cne ($compiledSource -replace "\r\n","`n")) {
+    throw 'Recompile the SmartTaskbar Popup Anchors module before packaging.'
 }
 foreach ($id in $mods.Keys) {
     $ini = Get-Content -LiteralPath (Join-Path $style "AppData/Engine/Mods/$id.ini") -Raw
@@ -58,6 +67,7 @@ foreach ($id in $mods.Keys) {
     if ($header -notmatch "(?m)^Version=$version\r?$" -or !$library.Success) {
         throw "Expected $id $($mods[$id])."
     }
+    if ($id -eq 'local@smarttaskbar-jump-lists') { $popupDll = $library.Groups[1].Value }
     $clean = $header -replace '(?m)^Disabled=\d+','Disabled=1' -replace '(?m)^SettingsChangeTime=\d+','SettingsChangeTime=0'
     Set-Content -LiteralPath (Join-Path $modRoot "$id.ini") -Value ($clean.TrimEnd() + "`r`n[Settings]") -Encoding ascii
     Copy-Item -LiteralPath (Join-Path $style "AppData/Engine/Mods/64/$($library.Groups[1].Value)") -Destination (Join-Path $modRoot '64')
@@ -121,6 +131,6 @@ $icon = Join-Path $PSScriptRoot 'assets/taskbar.ico'
 $installer = Join-Path $output 'SmartTaskbar-Setup.exe'
 $version = [regex]::Match((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -Raw), '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
 if (!$version.Success) { throw 'The installer requires a numeric major.minor.patch version.' }
-& $compilerPath '/V3' "/DPAYLOAD=$build" "/DOUTPUT=$installer" "/DICON=$icon" "/DVERSION=$($version.Groups[1].Value)" (Join-Path $PSScriptRoot 'SmartTaskbar.nsi')
+& $compilerPath '/V3' "/DPAYLOAD=$build" "/DOUTPUT=$installer" "/DPOPUP_DLL=$popupDll" "/DICON=$icon" "/DVERSION=$($version.Groups[1].Value)" (Join-Path $PSScriptRoot 'SmartTaskbar.nsi')
 if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $installer)) { throw 'Could not build SmartTaskbar Setup.' }
 Get-Item -LiteralPath $installer

@@ -71,6 +71,7 @@ enum Action {
     PrepareUpdate,
     ConfigureStyle,
     VerifyStyle { allow_legacy_search: bool },
+    VerifyPopupUpgrade,
     SyncStartup,
     UninstallRedirect,
     Help,
@@ -109,6 +110,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Action, Option<Pat
             Some("--verify-style" | "--verify-legacy-style") => Action::VerifyStyle {
                 allow_legacy_search: arg == "--verify-legacy-style",
             },
+            Some("--verify-popup-upgrade") => Action::VerifyPopupUpgrade,
             Some("--sync-startup") => Action::SyncStartup,
             Some("--uninstall-redirect") => Action::UninstallRedirect,
             Some("--help" | "-h") => Action::Help,
@@ -316,6 +318,9 @@ fn execute() -> Result<(), String> {
             allow_legacy_search,
         );
     }
+    if action == Action::VerifyPopupUpgrade {
+        return integrations::verify_popup_upgrade(&path.with_file_name("Windhawk"));
+    }
     if action == Action::UninstallRedirect {
         return integrations::search::uninstall(&path);
     }
@@ -343,7 +348,7 @@ fn execute() -> Result<(), String> {
         Action::Check => {
             integrations::check_profiles(&settings)?;
             println!(
-                "Configuration and four shell profiles validated. Desktop and sign-in settings untouched."
+                "Configuration and shell profiles validated. Desktop and sign-in settings untouched."
             );
             Ok(())
         }
